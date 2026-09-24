@@ -6,23 +6,54 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  validate-and-build:
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate Python syntax
+        shell: pwsh
+        run: |
+          python -m compileall -q plugin
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Install Inno Setup
-        uses: ConorMacInnes/setup-innosetup@v1
-        with:
-          version: "6.5.1"
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Locate ISCC
+        id: iscc
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+          }
+          if (-not $iscc) { throw "ISCC.exe not found" }
+          "path=$iscc" >> $env:GITHUB_OUTPUT
 
       - name: Compile installer
         shell: pwsh
-        run: iscc installer/SP_AI_Assistant.iss
+        run: |
+          & "${{ steps.iscc.outputs.path }}" installer\SP_AI_Assistant.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify installer artifact
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem installer\output\*.exe -File
+          if (-not $exe) { throw "No installer EXE produced" }
+          Write-Host "Built: $($exe.FullName)"
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: SP-AI-Assistant-Setup-0.1.0
           path: installer/output/*.exe
+          if-no-files-found: error
