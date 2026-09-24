@@ -9,6 +9,4 @@ dist/
 .env
 *.key
 *.pem
-.idea/
-.vscode/
 installer/output/

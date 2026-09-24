@@ -1,12 +1,7 @@
-from __future__ import annotations
-from abc import ABC, abstractmethod
-from typing import Any
-
+from abc import ABC,abstractmethod
 class AIProvider(ABC):
-    id = "base"
+    id="base"
     @abstractmethod
-    def list_models(self) -> list[str]:
-        raise NotImplementedError
+    def list_models(self): raise NotImplementedError
     @abstractmethod
-    def chat(self, messages: list[dict[str, Any]], model: str) -> str:
-        raise NotImplementedError
+    def chat(self,messages,model): raise NotImplementedError

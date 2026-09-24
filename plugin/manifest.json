@@ -6,7 +6,6 @@
   "min_painter_version": "9.0.0",
   "max_tested_painter_version": "999.0.0",
   "entry_point": "main.py",
-  "description": "In-Painter AI assistant foundation with multi-provider architecture.",
   "capabilities": [
     "dock_ui",
     "runtime_self_check",
