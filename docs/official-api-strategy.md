@@ -1,20 +1,24 @@
 # 官方 API 优先策略
 
-本项目遵循“官方 API 优先、最少自造轮子”。
+项目原则：Painter 已提供的能力优先直接调用官方 Python API，不重复实现。
 
-## 已采用
-- Painter 插件发现与生命周期：substance_painter_plugins
+已确认的官方接口包括：
+- 插件生命周期：start_plugin / close_plugin
 - Painter 版本：substance_painter.application.version_info()
 - Dock：substance_painter.ui.add_dock_widget()
 - UI 清理：substance_painter.ui.delete_ui_element()
-- Painter 插件加载/卸载/重载：substance_painter_plugins.start_plugin()/close_plugin()/reload_plugin()
+- 项目状态：substance_painter.project.is_open()
+- 活跃 Layer Stack：substance_painter.textureset.get_active_stack()
+- Texture Set：substance_painter.textureset
+- Layer/Mask/Effect：substance_painter.layerstack
+- 导出：substance_painter.export.export_project_textures()
 
-## 实现原则
-1. Painter 已提供的能力直接调用官方 API。
-2. 不重复实现 Painter 的项目、图层、Texture Set、导出等能力。
-3. 只有“AI 编排、Provider 适配、安全配置、安装器”等 Painter 没有提供的部分自行实现。
-4. 每新增一个 Painter 功能，先检查官方 Python API；有官方接口就不模拟 UI 点击、不读内部文件、不维护自己的状态副本。
-5. 版本兼容优先通过官方 version_info() 和 API 能力检测判断。
+## Qt 兼容
+Adobe 官方 Qt6 Migration 文档确认 Painter 10.1 从 Qt5 切换到 Qt6：
+- Painter < 10.1：PySide2
+- Painter >= 10.1：PySide6
 
-## 当前官方依据
-Adobe Substance 3D Painter Python API 文档（2026-09）明确提供上述插件管理、版本和 UI 接口。
+因此插件根据官方 version_info() 动态选择 Qt，而不是假定所有版本都使用 PySide6。
+
+## 原则
+AI 只负责理解意图、生成计划和编排调用；实际 Painter 操作尽可能交给官方 API。
