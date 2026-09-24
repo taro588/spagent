@@ -30,4 +30,5 @@ def test_installer_detection_logic():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
     assert "DetectPainters" in iss
     assert "GetVersionNumbers" in iss
-    assert "Adobe Substance 3D Painter*.exe" in iss
+    assert "Adobe Substance 3D Painter*" in iss
+    assert "Adobe Substance 3D Painter.exe" in iss
