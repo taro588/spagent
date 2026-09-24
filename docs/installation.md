@@ -14,7 +14,7 @@ Legacy 路径：
 
 C:\Users\<用户名>\Documents\Allegorithmic\Substance Painter\python\plugins
 
-本版本安装器会优先使用已经存在的 Modern 目录，否则使用 Legacy；如果两者都不存在，则创建 Modern 目录。
+本版本安装器会检测常见 Adobe 安装目录中的 Painter 可执行文件，并在安装开始时显示检测结果。检测不到并不会阻止安装，因为 Painter 的用户 Python 插件目录与 Painter 主程序安装目录是分开的。安装器仍会使用 Adobe 官方用户资源目录：优先 Modern，若不存在则使用 Legacy；两者都不存在时创建 Modern。
 
 ## 安装内容
 
