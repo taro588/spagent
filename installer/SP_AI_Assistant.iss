@@ -28,6 +28,10 @@ Type: files; Name: "{app}\sp_ai_assistant.py"
 Type: files; Name: "{app}\manifest.json"
 
 [Code]
+const
+  PainterUninstallKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall';
+  NL = #13#10;
+
 var
   DetectionText: String;
   PainterDetected: Boolean;
@@ -57,11 +61,19 @@ begin
     Result := Modern;
 end;
 
-procedure AddPainterCandidate(const ExePath: String);
+function CandidateAlreadyListed(const ExePath: String): Boolean;
+begin
+  Result := Pos(ExePath, DetectionText) > 0;
+end;
+
+procedure AddPainterCandidate(const ExePath: String; const Source: String);
 var
   VersionText: String;
 begin
-  if not FileExists(ExePath) then
+  if (ExePath = '') or (not FileExists(ExePath)) then
+    exit;
+
+  if CandidateAlreadyListed(ExePath) then
     exit;
 
   PainterDetected := True;
@@ -69,8 +81,9 @@ begin
     VersionText := '版本信息不可用';
 
   DetectionText := DetectionText +
-    '✓ Substance 3D Painter ' + VersionText + #13#10 +
-    '  程序: ' + ExePath + #13#10;
+    '✓ Substance 3D Painter ' + VersionText + NL +
+    '  来源: ' + Source + NL +
+    '  程序: ' + ExePath + NL;
 end;
 
 procedure ScanPainterFolder(const Root: String);
@@ -89,13 +102,85 @@ begin
         begin
           DirPath := AddBackslash(Root) + FindRec.Name;
           ExePath := DirPath + '\Adobe Substance 3D Painter.exe';
-          AddPainterCandidate(ExePath);
+          AddPainterCandidate(ExePath, '常见 Adobe 程序目录');
         end;
       until not FindNext(FindRec);
     finally
       FindClose(FindRec);
     end;
   end;
+end;
+
+function CleanDisplayIconPath(const Value: String): String;
+var
+  S: String;
+  P: Integer;
+begin
+  S := Trim(Value);
+
+  if (Length(S) >= 2) and (S[1] = '"') then
+  begin
+    P := Pos('"', Copy(S, 2, Length(S) - 1));
+    if P > 0 then
+      S := Copy(S, 2, P - 1);
+  end
+  else
+  begin
+    P := Pos(',', S);
+    if P > 0 then
+      S := Copy(S, 1, P - 1);
+  end;
+
+  Result := Trim(S);
+end;
+
+procedure ScanUninstallRegistry(const RootKey: Integer; const RootName: String);
+var
+  Names: TArrayOfString;
+  I: Integer;
+  SubKey, DisplayName, InstallLocation, DisplayIcon, ExePath: String;
+begin
+  if not RegGetSubkeyNames(RootKey, PainterUninstallKey, Names) then
+    exit;
+
+  for I := 0 to GetArrayLength(Names) - 1 do
+  begin
+    SubKey := PainterUninstallKey + '\' + Names[I];
+
+    DisplayName := '';
+    if not RegQueryStringValue(RootKey, SubKey, 'DisplayName', DisplayName) then
+      continue;
+
+    if Pos('substance 3d painter', LowerCase(DisplayName)) = 0 then
+      continue;
+
+    InstallLocation := '';
+    ExePath := '';
+
+    if RegQueryStringValue(RootKey, SubKey, 'InstallLocation', InstallLocation) then
+      if InstallLocation <> '' then
+        ExePath := AddBackslash(InstallLocation) + 'Adobe Substance 3D Painter.exe';
+
+    if (ExePath = '') or (not FileExists(ExePath)) then
+    begin
+      DisplayIcon := '';
+      if RegQueryStringValue(RootKey, SubKey, 'DisplayIcon', DisplayIcon) then
+        ExePath := CleanDisplayIconPath(DisplayIcon);
+    end;
+
+    AddPainterCandidate(
+      ExePath,
+      'Windows 卸载注册表 (' + RootName + ')');
+  end;
+end;
+
+procedure ScanAdobeRegistry();
+begin
+  { Check both 64-bit and 32-bit registry views, plus per-user uninstall data. }
+  ScanUninstallRegistry(HKEY_LOCAL_MACHINE_64, 'HKLM64');
+  ScanUninstallRegistry(HKEY_LOCAL_MACHINE_32, 'HKLM32');
+  ScanUninstallRegistry(HKEY_CURRENT_USER_64, 'HKCU64');
+  ScanUninstallRegistry(HKEY_CURRENT_USER_32, 'HKCU32');
 end;
 
 procedure DetectPainters();
@@ -105,6 +190,10 @@ begin
   DetectionText := '';
   PainterDetected := False;
 
+  { Registry is the primary method because Painter may be installed on D:, E:, etc. }
+  ScanAdobeRegistry();
+
+  { Keep common-path scanning as a fallback for portable/custom installations. }
   ProgramFilesRoot := ExpandConstant('{autopf}\Adobe');
   ProgramFilesX86Root := ExpandConstant('{commonpf32}\Adobe');
 
@@ -113,13 +202,13 @@ begin
 
   if FileExists(GetModernPainterRoot() + '\python\plugins\sp_ai_assistant.py') then
     DetectionText := DetectionText +
-      #13#10 + '✓ 已发现现有插件安装: ' +
-      GetModernPainterRoot() + '\python\plugins' + #13#10;
+      NL + '✓ 已发现现有插件安装: ' +
+      GetModernPainterRoot() + '\python\plugins' + NL;
 
   if FileExists(GetLegacyPainterRoot() + '\python\plugins\sp_ai_assistant.py') then
     DetectionText := DetectionText +
-      #13#10 + '✓ 已发现旧版用户插件目录中的现有安装: ' +
-      GetLegacyPainterRoot() + '\python\plugins' + #13#10;
+      NL + '✓ 已发现旧版用户插件目录中的现有安装: ' +
+      GetLegacyPainterRoot() + '\python\plugins' + NL;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -132,24 +221,26 @@ begin
 
     if PainterDetected then
       MsgBox(
-        '检测到 Substance 3D Painter:' + #13#10 + #13#10 +
-        DetectionText + #13#10 +
-        '插件将安装到 Painter 官方用户 Python 插件目录。' + #13#10 +
+        '检测到 Substance 3D Painter:' + NL + NL +
+        DetectionText + NL +
+        '插件将安装到 Painter 官方用户 Python 插件目录。' + NL +
         '不会修改 Painter 核心程序。',
         mbInformation, MB_OK)
     else
       MsgBox(
-        '未在常见 Adobe 安装目录中检测到 Substance 3D Painter 可执行文件。' + #13#10 + #13#10 +
-        '这不会阻止安装。安装器仍会使用 Adobe 官方用户资源目录:' + #13#10 +
-        GetModernPainterRoot() + '\python\plugins' + #13#10 + #13#10 +
-        '如果你的 Painter 安装在自定义位置，也可以继续安装；安装后请在 Painter 中重新加载插件。',
+        '未检测到 Substance 3D Painter。' + NL + NL +
+        '安装器已检查 Windows 卸载注册表、64/32 位注册表视图以及常见 Adobe 安装目录。' + NL +
+        '如果你的 Painter 使用非常规安装方式且未写入这些位置，安装器仍会继续安装到官方用户插件目录:' + NL +
+        GetModernPainterRoot() + '\python\plugins' + NL + NL +
+        '不会修改 Painter 核心程序。',
         mbInformation, MB_OK);
   end;
 
   if CurPageID = wpSelectDir then
     MsgBox(
-      '当前安装目录:' + #13#10 + ExpandConstant('{app}') + #13#10 + #13#10 +
-      '该目录是 Substance 3D Painter 的用户 Python 插件目录。' + #13#10 +
+      '当前安装目录:' + NL +
+      ExpandConstant('{app}') + NL + NL +
+      '该目录是 Substance 3D Painter 的用户 Python 插件目录。' + NL +
       '不会修改 Painter 核心程序，也不会删除其他插件。',
       mbInformation, MB_OK);
 end;
@@ -166,13 +257,13 @@ begin
   begin
     if VerifyInstall() then
       MsgBox(
-        'SP AI Assistant 安装成功。' + #13#10 + #13#10 +
-        '安装位置:' + #13#10 + ExpandConstant('{app}') + #13#10 + #13#10 +
+        'SP AI Assistant 安装成功。' + NL + NL +
+        '安装位置:' + NL + ExpandConstant('{app}') + NL + NL +
         '请重新启动 Substance 3D Painter，然后在 Python 菜单中启用插件。',
         mbInformation, MB_OK)
     else
       MsgBox(
-        '安装完成但验证失败：未找到插件入口文件。' + #13#10 +
+        '安装完成但验证失败：未找到插件入口文件。' + NL +
         ExpandConstant('{app}'),
         mbError, MB_OK);
   end;
