@@ -24,3 +24,10 @@ def test_installer_payload():
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
     assert "sp_ai_assistant.py" in iss
+
+
+def test_installer_detection_logic():
+    iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
+    assert "DetectPainters" in iss
+    assert "GetVersionNumbers" in iss
+    assert "Adobe Substance 3D Painter*.exe" in iss
