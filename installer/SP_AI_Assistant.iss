@@ -1,4 +1,4 @@
-; SP AI Assistant Windows installer
+; SP AI Assistant 0.1.0
 #define MyAppName "SP AI Assistant"
 #define MyAppVersion "0.1.0"
 #define MyAppPublisher "taro588"
@@ -17,12 +17,15 @@ OutputBaseFilename=SP_AI_Assistant_Setup_{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=lowest
+ArchitecturesInstallIn64BitMode=x64compatible
 
 [Files]
-Source: "..\plugin\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "..\plugin\sp_ai_assistant.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\plugin\manifest.json"; DestDir: "{app}"; Flags: ignoreversion
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{app}"
+Type: files; Name: "{app}\sp_ai_assistant.py"
+Type: files; Name: "{app}\manifest.json"
 
 [Code]
 function GetModernPainterRoot(): String;
@@ -39,11 +42,12 @@ function GetPainterPluginDir(Param: String): String;
 var
   Modern, Legacy: String;
 begin
-  Modern := GetModernPainterRoot() + '\python\plugins\sp_ai_assistant';
-  Legacy := GetLegacyPainterRoot() + '\python\plugins\sp_ai_assistant';
-  if DirExists(ExtractFileDir(Modern)) then
+  Modern := GetModernPainterRoot() + '\python\plugins';
+  Legacy := GetLegacyPainterRoot() + '\python\plugins';
+
+  if DirExists(Modern) then
     Result := Modern
-  else if DirExists(ExtractFileDir(Legacy)) then
+  else if DirExists(Legacy) then
     Result := Legacy
   else
     Result := Modern;
@@ -53,19 +57,22 @@ function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
   if CurPageID = wpSelectDir then
-    MsgBox('插件将安装到 Substance 3D Painter 用户 Python 插件目录，不修改 Painter 核心程序文件。', mbInformation, MB_OK);
+    MsgBox('将安装到 Substance 3D Painter 用户 Python 插件目录，不修改 Painter 核心程序。', mbInformation, MB_OK);
+end;
+
+function VerifyInstall(): Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\sp_ai_assistant.py')) and
+           FileExists(ExpandConstant('{app}\manifest.json'));
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
-var
-  Marker: String;
 begin
   if CurStep = ssPostInstall then
   begin
-    Marker := ExpandConstant('{app}\manifest.json');
-    if FileExists(Marker) then
-      MsgBox('SP AI Assistant 安装成功。请启动 Substance 3D Painter，在 Python 菜单中启用插件。', mbInformation, MB_OK)
+    if VerifyInstall() then
+      MsgBox('SP AI Assistant 安装成功。请重新启动 Substance 3D Painter，然后在 Python 菜单中启用插件。', mbInformation, MB_OK)
     else
-      MsgBox('安装完成但验证失败：未找到 manifest.json。', mbError, MB_OK);
+      MsgBox('安装完成但验证失败：未找到插件入口文件。', mbError, MB_OK);
   end;
 end;

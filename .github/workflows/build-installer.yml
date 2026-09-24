@@ -1,0 +1,28 @@
+name: Build Windows Installer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        uses: ConorMacInnes/setup-innosetup@v1
+        with:
+          version: "6.5.1"
+
+      - name: Compile installer
+        shell: pwsh
+        run: iscc installer/SP_AI_Assistant.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SP-AI-Assistant-Setup-0.1.0
+          path: installer/output/*.exe
