@@ -3,13 +3,17 @@
   "name": "SP AI Assistant",
   "version": "0.1.0",
   "api": "python",
-  "min_painter_version": "9.0.0",
-  "max_tested_painter_version": "999.0.0",
-  "entry_point": "main.py",
+  "min_painter_version": "7.2.0",
+  "max_tested_painter_version": null,
+  "entry_point": "sp_ai_assistant.py",
   "capabilities": [
     "dock_ui",
     "runtime_self_check",
     "provider_configuration",
     "model_selection"
-  ]
+  ],
+  "compatibility": {
+    "7.2.0-10.0.x": "PySide2",
+    "10.1.0+": "PySide6"
+  }
 }
