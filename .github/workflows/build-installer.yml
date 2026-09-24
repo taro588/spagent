@@ -15,6 +15,7 @@ jobs:
       - name: Validate Python syntax
         shell: pwsh
         run: |
+          python -m pip install -q pytest
           python -m compileall -q plugin
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pytest -q tests/validate_release.py
