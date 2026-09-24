@@ -59,16 +59,13 @@ end;
 
 procedure AddPainterCandidate(const ExePath: String);
 var
-  Major, Minor, Build, Revision: Integer;
   VersionText: String;
 begin
   if not FileExists(ExePath) then
     exit;
 
   PainterDetected := True;
-  if GetVersionNumbers(ExePath, Major, Minor, Build, Revision) then
-    VersionText := IntToStr(Major) + '.' + IntToStr(Minor) + '.' + IntToStr(Build)
-  else
+  if not GetVersionNumbersString(ExePath, VersionText) then
     VersionText := '版本信息不可用';
 
   DetectionText := DetectionText +
