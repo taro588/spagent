@@ -1,21 +1,27 @@
 from __future__ import annotations
+
 import platform
 import sys
+
 import substance_painter
 import substance_painter.ui
 
 _widgets = []
 
+
 def _qt_widgets():
-    # Adobe documents Qt5 before Painter 10.1 and Qt6 from 10.1 onward.
-    if substance_painter.application.version_info() < (10, 1, 0):
+    """Use the Qt binding shipped by the installed Painter version."""
+    version = substance_painter.application.version_info()
+    if version < (10, 1, 0):
         from PySide2 import QtWidgets
     else:
         from PySide6 import QtWidgets
     return QtWidgets
 
+
 def _version():
     return ".".join(map(str, substance_painter.application.version_info()))
+
 
 def _check():
     version = substance_painter.application.version_info()
@@ -29,18 +35,23 @@ def _check():
         "系统": platform.system(),
     }
 
+
 def start_plugin():
     if _widgets:
         return
+
     QtWidgets = _qt_widgets()
     widget = QtWidgets.QWidget()
     widget.setObjectName("SPAI_Assistant_Dock")
     widget.setWindowTitle("SP AI Assistant")
+
     layout = QtWidgets.QVBoxLayout(widget)
     layout.addWidget(QtWidgets.QLabel("<b>SP AI Assistant</b>"))
     layout.addWidget(QtWidgets.QLabel("0.1.0 · 官方 API 优先"))
+
     status = QtWidgets.QLabel("插件已加载")
     layout.addWidget(status)
+
     button = QtWidgets.QPushButton("运行环境自检")
     output = QtWidgets.QPlainTextEdit()
     output.setReadOnly(True)
@@ -53,13 +64,19 @@ def start_plugin():
     button.clicked.connect(check)
     layout.addWidget(button)
     layout.addWidget(output)
+
     substance_painter.ui.add_dock_widget(widget)
     _widgets.append(widget)
 
+
 def close_plugin():
     for widget in _widgets:
-        substance_painter.ui.delete_ui_element(widget)
+        try:
+            substance_painter.ui.delete_ui_element(widget)
+        except Exception:
+            pass
     _widgets.clear()
+
 
 if __name__ == "__main__":
     start_plugin()
