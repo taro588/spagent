@@ -9,7 +9,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={code:GetPainterPluginDir}
-DisableDirPage=no
+DisableDirPage=yes
 DisableProgramGroupPage=yes
 Uninstallable=yes
 OutputDir=output
@@ -223,7 +223,8 @@ begin
       MsgBox(
         '检测到 Substance 3D Painter:' + NL + NL +
         DetectionText + NL +
-        '插件将安装到 Painter 官方用户 Python 插件目录。' + NL +
+        '插件将自动安装到 Painter 官方用户 Python 插件目录。' + NL +
+        '安装目录不会让用户误选到 Painter 程序目录。' + NL +
         '不会修改 Painter 核心程序。',
         mbInformation, MB_OK)
     else
@@ -236,13 +237,6 @@ begin
         mbInformation, MB_OK);
   end;
 
-  if CurPageID = wpSelectDir then
-    MsgBox(
-      '当前安装目录:' + NL +
-      ExpandConstant('{app}') + NL + NL +
-      '该目录是 Substance 3D Painter 的用户 Python 插件目录。' + NL +
-      '不会修改 Painter 核心程序，也不会删除其他插件。',
-      mbInformation, MB_OK);
 end;
 
 function VerifyInstall(): Boolean;
