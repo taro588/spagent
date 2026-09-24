@@ -1,12 +1,30 @@
 from __future__ import annotations
-try:
- from PySide6 import QtWidgets
-except ImportError: QtWidgets=None
-def build_dock(check_fn):
- if QtWidgets is None: raise RuntimeError("PySide6 unavailable")
- w=QtWidgets.QWidget(); w.setWindowTitle("SP AI Assistant"); l=QtWidgets.QVBoxLayout(w)
- l.addWidget(QtWidgets.QLabel("SP AI Assistant — Phase 0.1"))
- l.addWidget(QtWidgets.QLabel("多模型 AI 与 SP 操作执行将在后续版本启用。"))
- b=QtWidgets.QPushButton("运行环境自检"); out=QtWidgets.QPlainTextEdit(); out.setReadOnly(True)
- b.clicked.connect(lambda: out.setPlainText("\n".join(f"{k}: {v}" for k,v in check_fn().items())))
- l.addWidget(b); l.addWidget(out); return w
+from PySide6 import QtWidgets
+
+def build_dock(check_fn, manifest_fn):
+    w = QtWidgets.QWidget()
+    w.setObjectName("SPAI_Assistant_Dock")
+    w.setWindowTitle("SP AI Assistant")
+    layout = QtWidgets.QVBoxLayout(w)
+
+    title = QtWidgets.QLabel("<b>SP AI Assistant</b>")
+    layout.addWidget(title)
+    status = QtWidgets.QLabel("插件已加载 · Phase 0.1")
+    layout.addWidget(status)
+
+    check_button = QtWidgets.QPushButton("运行环境自检")
+    output = QtWidgets.QPlainTextEdit()
+    output.setReadOnly(True)
+
+    def do_check():
+        data = check_fn()
+        output.setPlainText("\n".join(f"{k}: {v}" for k, v in data.items()))
+        if data.get("plugin_loaded") and data.get("substance_painter_python"):
+            status.setText("插件已加载 · SP Python API 正常")
+        else:
+            status.setText("插件已加载 · 发现兼容性问题")
+
+    check_button.clicked.connect(do_check)
+    layout.addWidget(check_button)
+    layout.addWidget(output)
+    return w
