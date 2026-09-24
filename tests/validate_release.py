@@ -29,6 +29,14 @@ def test_installer_payload():
 def test_installer_detection_logic():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
     assert "DetectPainters" in iss
-    assert "GetVersionNumbers" in iss
+    assert "GetVersionNumbersString" in iss
+    assert "RegGetSubkeyNames" in iss
+    assert "HKEY_LOCAL_MACHINE_64" in iss
+    assert "HKEY_LOCAL_MACHINE_32" in iss
+    assert "HKEY_CURRENT_USER_64" in iss
+    assert "HKEY_CURRENT_USER_32" in iss
+    assert "InstallLocation" in iss
+    assert "DisplayIcon" in iss
     assert "Adobe Substance 3D Painter*" in iss
     assert "Adobe Substance 3D Painter.exe" in iss
+    assert "D:" not in iss and "E:" not in iss
