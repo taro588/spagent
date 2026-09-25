@@ -85,6 +85,8 @@ def test_ai_modules():
     assert "api.anthropic.com" in client
     assert "/v1/messages" in client
     assert "generativelanguage.googleapis.com" in client
+    assert "_extract_openai_responses_text" in client
+    assert "_extract_openai_compatible_content" in client
     assert ":generateContent" in client
     assert "CryptProtectData" in settings
     assert "CryptUnprotectData" in settings
