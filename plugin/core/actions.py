@@ -83,6 +83,30 @@ def _value_close(actual, expected, tolerance=1e-4):
         return abs(float(actual) - float(expected)) <= tolerance
     return _serializable(actual) == _serializable(expected)
 
+
+def _material_source(node):
+    if not hasattr(node, "get_material_source"):
+        raise ActionError("目标节点不支持 Material source。")
+    try:
+        source = node.get_material_source()
+    except Exception as exc:
+        raise ActionError(
+            "当前节点不在多通道 Material 模式，无法编辑 Substance 参数。"
+        ) from exc
+    if source is None or not hasattr(source, "get_parameters") or not hasattr(source, "set_parameters"):
+        raise ActionError("当前 Material source 不支持 Substance 参数编辑。")
+    return source
+
+
+def _normalize_parameter_value(value):
+    # Painter SourceSubstance accepts tuples for vector-like values.
+    # AI plans commonly arrive as JSON arrays, so normalize recursively.
+    if isinstance(value, list):
+        return tuple(_normalize_parameter_value(v) for v in value)
+    if isinstance(value, dict):
+        return {str(k): _normalize_parameter_value(v) for k, v in value.items()}
+    return value
+
 def execute_plan(plan: dict) -> dict:
     if not isinstance(plan, dict) or not isinstance(plan.get("actions"), list):
         raise ActionError("执行计划格式无效。")
@@ -195,13 +219,11 @@ def execute_plan(plan: dict) -> dict:
                 node = created[-1]
                 if not isinstance(node, (sp.layerstack.FillLayerNode, sp.layerstack.FillEffectNode)):
                     raise ActionError("set_fill_property 只能作用于 Fill Layer/Fill Effect。")
-                source = node.get_material_source()
-                if not source or not hasattr(source, "get_parameters"):
-                    raise ActionError("当前 Fill 没有可编辑的 Substance 参数。")
+                source = _material_source(node)
                 property_name = str(action.get("property") or "").strip()
                 if not property_name:
                     raise ActionError("set_fill_property 需要 property。")
-                value = action.get("value")
+                value = _normalize_parameter_value(action.get("value"))
                 available = source.get_parameters()
                 if property_name not in available:
                     raise ActionError(f"当前材质不存在参数: {property_name}")
@@ -212,12 +234,14 @@ def execute_plan(plan: dict) -> dict:
                 if not created:
                     raise ActionError("set_source_parameters 没有可作用的最近节点。")
                 node = created[-1]
-                source = node.get_material_source() if hasattr(node, "get_material_source") else None
-                if not source or not hasattr(source, "get_parameters"):
-                    raise ActionError("目标节点没有可编辑的 Substance source。")
+                source = _material_source(node)
                 values = action.get("parameters")
                 if not isinstance(values, dict) or not values:
                     raise ActionError("parameters 必须是非空对象。")
+                values = {
+                    str(name): _normalize_parameter_value(value)
+                    for name, value in values.items()
+                }
                 available = source.get_parameters()
                 unknown = [name for name in values if name not in available]
                 if unknown:
@@ -254,7 +278,12 @@ def execute_plan(plan: dict) -> dict:
                 if not isinstance(expected, dict) or not expected:
                     raise ActionError("parameters 必须是非空对象。")
                 if hasattr(node, "get_material_source"):
-                    source = node.get_material_source()
+                    try:
+                        source = node.get_material_source()
+                    except Exception as exc:
+                        raise ActionError(
+                            "当前节点不在多通道 Material 模式，无法验证 Substance 参数。"
+                        ) from exc
                     actual = source.get_parameters() if source else {}
                 elif hasattr(node, "get_parameters"):
                     actual = node.get_parameters()
@@ -383,7 +412,15 @@ def execute_plan(plan: dict) -> dict:
                 if not hasattr(node, "set_material_source"):
                     raise ActionError("最近节点不是支持材质源的 Fill Layer。")
                 resource = _resource("substance", action.get("resource") or action.get("name"))
-                node.set_material_source(resource.identifier())
-                results.append({"action": kind, "resource": resource.gui_name(), "target": node.get_name()})
+                source = node.set_material_source(resource.identifier())
+                if source is None:
+                    raise ActionError("Painter 没有返回可编辑的 Material source。")
+                results.append({
+                    "action": kind,
+                    "resource": resource.gui_name(),
+                    "target": node.get_name(),
+                    "source_type": type(source).__name__,
+                    "source_uid": source.uid() if hasattr(source, "uid") else None,
+                })
 
     return {"success": True, "results": results}
