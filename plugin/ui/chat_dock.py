@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from core.actions import execute_plan\nfrom core.ai_client import PROVIDERS, chat\nfrom core.painter_context import prompt_context
 from core.qt_compat import qt_modules
 from core.settings import provider_config, save_provider_config
@@ -37,6 +39,7 @@ class ChatDock(QtWidgets.QWidget):
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._thread = None
         self._worker = None
+        self._last_plan = None
         self._build_ui(version_text)
         self._load_provider()
 
@@ -133,6 +136,7 @@ class ChatDock(QtWidgets.QWidget):
 
     def _context(self):\n        try:\n            self._append("Painter 上下文", prompt_context())\n            self.status.setText("✓ 已读取当前 Painter 上下文")\n        except Exception as exc:\n            self.status.setText("✗ 上下文读取失败")\n            self._append("错误", str(exc))\n\n    def _execute_last_plan(self):\n        if not self._last_plan:\n            self.status.setText("✗ 还没有可执行的操作计划")\n            return\n        try:\n            result = execute_plan(self._last_plan)\n            self._append("执行结果", str(result))\n            self.status.setText("✓ Painter 操作执行完成")\n            self._last_plan = None\n        except Exception as exc:\n            self.status.setText("✗ Painter 操作失败")\n            self._append("执行错误", str(exc))\n\n    def _clear(self):
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self._last_plan = None
         self.history.clear()
         self.status.setText("对话已清空")
 
@@ -204,7 +208,16 @@ class ChatDock(QtWidgets.QWidget):
         if state == "ok":
             self._messages.append({"role": "assistant", "content": text})
             self._append("AI", text)
-            self.status.setText("✓ 已收到模型回复")
+            try:
+                candidate = text.strip().replace("```json", "").replace("```", "").strip()
+                plan = json.loads(candidate)
+                if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
+                    self._last_plan = plan
+                    self.status.setText("✓ 已生成操作计划，点击执行")
+                else:
+                    self.status.setText("✓ 已收到模型回复")
+            except Exception:
+                self.status.setText("✓ 已收到模型回复")
         else:
             self._messages.pop()
             self._append("错误", text)
