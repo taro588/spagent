@@ -24,6 +24,16 @@ def test_manifest():
     assert "controlled_actions" in data["capabilities"]
 
 
+def test_release_versions_are_synchronized():
+    manifest = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
+    iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "build-installer.yml").read_text(encoding="utf-8")
+    version = manifest["version"]
+    assert f'#define MyAppVersion "{version}"' in iss
+    assert f"name: SP-AI-Assistant-Setup-{version}" in workflow
+    assert f"SP_AI_Assistant_Setup_{{#MyAppVersion}}" in iss
+
+
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
     assert '#define MyAppVersion "0.3.0"' in iss
