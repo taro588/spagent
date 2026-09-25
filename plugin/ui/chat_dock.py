@@ -14,7 +14,7 @@ SYSTEM_PROMPT = """你是 SP AI Assistant，运行在 Adobe Substance 3D Painter
 你的职责是帮助用户进行游戏材质、PBR、Texture Set、图层、Mask、Generator、Filter 和导出工作。
 你可以读取当前 Painter 上下文。
 当用户要求修改 Painter 时，只生成 JSON 操作计划，不要声称已经执行。
-允许动作：create_fill_layer、create_paint_layer、create_group、add_mask、set_opacity、add_generator、add_filter、add_smart_mask、add_smart_material、set_fill_material、set_active_channels、set_projection_mode、set_projection_scale、set_fill_property、rename_selected、delete_selected、select_last_created、export_textures。
+允许动作：create_fill_layer、create_paint_layer、create_group、add_mask、set_opacity、add_generator、add_filter、add_smart_mask、add_smart_material、set_fill_material、set_active_channels、set_projection_mode、set_projection_scale、set_fill_property、set_source_parameters、set_effect_parameters、verify_last_created_parameters、rename_selected、delete_selected、select_last_created、export_textures。
 删除和导出属于高影响操作，必须先生成计划并由用户点击执行。
 资源名称必须来自当前 Painter 可搜索资源，不要编造。"""
 
@@ -28,7 +28,8 @@ class _Worker(QtCore.QObject):
     @QtCore.Slot()
     def run(self):
         try:
-            self.finished.emit("ok", chat(*self.args))
+            provider, model, key, base_url, messages = self.args
+            self.finished.emit("ok", chat(provider, messages, model, key, base_url))
         except Exception as exc:
             self.finished.emit("error", str(exc))
 
@@ -43,6 +44,7 @@ class ChatDock(QtWidgets.QWidget):
         self._thread = None
         self._worker = None
         self._last_plan = None
+        self._last_execution = None
         self._build_ui(version_text)
         self._load_provider()
 
@@ -147,14 +149,67 @@ class ChatDock(QtWidgets.QWidget):
         if not self._last_plan:
             self.status.setText("✗ 还没有可执行的操作计划")
             return
+        plan = self._last_plan
         try:
-            result = execute_plan(self._last_plan)
+            result = execute_plan(plan)
+            self._last_execution = result
             self._append("执行结果", json.dumps(result, ensure_ascii=False, indent=2))
-            self.status.setText("✓ Painter 操作执行完成")
+            verification = [
+                item for item in result.get("results", [])
+                if item.get("action") == "verify_last_created_parameters"
+            ]
+            failed = [item for item in verification if not item.get("verified", False)]
             self._last_plan = None
+            if failed:
+                self._append("验证失败", json.dumps(failed, ensure_ascii=False, indent=2))
+                self.status.setText("⚠ 修改未完全生效，正在生成修正计划")
+                self._request_correction(plan, result)
+            else:
+                self.status.setText("✓ Painter 操作完成并通过验证")
         except Exception as exc:
             self.status.setText("✗ Painter 操作失败")
             self._append("执行错误", str(exc))
+
+    def _request_correction(self, plan, result):
+        try:
+            context = prompt_context()
+        except Exception as exc:
+            context = json.dumps({"context_error": str(exc)}, ensure_ascii=False)
+        correction = {
+            "role": "user",
+            "content": (
+                "上一轮 Painter 操作已经执行，但验证结果存在失败项。"
+                "请根据实际结果重新生成一个仅包含必要修正动作的 JSON 操作计划，"
+                "不要直接执行，不要重复已经成功的动作。"
+                "\n原计划：\n" + json.dumps(plan, ensure_ascii=False) +
+                "\n执行结果：\n" + json.dumps(result, ensure_ascii=False) +
+                "\n当前 Painter 上下文：\n" + context
+            ),
+        }
+        messages = list(self._messages) + [correction]
+        self._append("系统", "正在根据验证结果请求 AI 生成修正计划……")
+        self._start_request(messages, self._correction_done)
+
+    @QtCore.Slot(str, str)
+    def _correction_done(self, state, text):
+        if state != "ok":
+            self._append("修正请求失败", text)
+            self.status.setText("✗ 自动生成修正计划失败")
+            return
+        self._append("AI 修正计划", text)
+        candidate = text.strip()
+        fence = chr(96) * 3
+        if candidate.startswith(fence):
+            candidate = candidate.replace(fence + "json", "", 1).replace(fence, "").strip()
+        try:
+            plan = json.loads(candidate)
+        except Exception:
+            plan = None
+        if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
+            self._last_plan = plan
+            self.status.setText("✓ 已根据实际结果生成修正计划，请检查后执行")
+        else:
+            self.status.setText("✗ AI 没有返回有效修正计划")
 
     def _clear(self):
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
