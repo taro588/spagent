@@ -14,6 +14,7 @@ SUPPORTED_ACTIONS = {
     "set_fill_property",
     "set_source_parameters",
     "set_effect_parameters",
+    "verify_last_created_parameters",
     "add_generator",
     "add_filter",
     "add_smart_mask",
@@ -62,6 +63,25 @@ def _mask_position(node):
 def _content_position(node):
     return sp.layerstack.InsertPosition.inside_node(node, sp.layerstack.NodeStack.Content)
 
+
+
+def _serializable(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_serializable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _serializable(v) for k, v in value.items()}
+    for attrs in (("r", "g", "b", "a"), ("x", "y", "z")):
+        if all(hasattr(value, a) for a in attrs):
+            return {a: float(getattr(value, a)) for a in attrs}
+    return str(value)
+
+
+def _value_close(actual, expected, tolerance=1e-4):
+    if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
+        return abs(float(actual) - float(expected)) <= tolerance
+    return _serializable(actual) == _serializable(expected)
 
 def execute_plan(plan: dict) -> dict:
     if not isinstance(plan, dict) or not isinstance(plan.get("actions"), list):
@@ -214,6 +234,33 @@ def execute_plan(plan: dict) -> dict:
                     raise ActionError("未知参数: " + ", ".join(unknown))
                 node.set_parameters(values)
                 results.append({"action": kind, "target": node.get_name(), "parameters": values})
+
+            elif kind == "verify_last_created_parameters":
+                if not created:
+                    raise ActionError("verify_last_created_parameters 没有可验证的最近节点。")
+                node = created[-1]
+                expected = action.get("parameters")
+                if not isinstance(expected, dict) or not expected:
+                    raise ActionError("parameters 必须是非空对象。")
+                if hasattr(node, "get_material_source"):
+                    source = node.get_material_source()
+                    actual = source.get_parameters() if source else {}
+                elif hasattr(node, "get_parameters"):
+                    actual = node.get_parameters()
+                else:
+                    raise ActionError("目标节点不支持参数读取。")
+                mismatches = {}
+                for name, wanted in expected.items():
+                    if name not in actual:
+                        mismatches[name] = {"expected": wanted, "actual": None, "reason": "missing"}
+                    elif not _value_close(actual[name], wanted):
+                        mismatches[name] = {"expected": wanted, "actual": _serializable(actual[name]), "reason": "different"}
+                results.append({
+                    "action": kind,
+                    "target": node.get_name(),
+                    "verified": not mismatches,
+                    "mismatches": mismatches,
+                })
 
             elif kind == "set_opacity":
                 if not created:
