@@ -116,6 +116,7 @@ def test_context_and_actions():
     assert "delete_selected" in actions
     assert "export_textures" in actions
     assert "set_fill_property" in actions
+    assert "validate_plan" in actions
     assert "_material_source" in actions
     assert "_normalize_parameter_value" in actions
     assert "set_material_source" in actions
