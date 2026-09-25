@@ -103,6 +103,11 @@ def test_context_and_actions():
     assert "insert_paint" in actions
     assert "add_mask" in actions
     assert "set_opacity" in actions
+    assert "insert_generator_effect" in actions
+    assert "insert_filter_effect" in actions
+    assert "insert_smart_mask" in actions
+    assert "insert_smart_material" in actions
+    assert "resource.search" in actions
 
 
 def test_plugin_entry():
