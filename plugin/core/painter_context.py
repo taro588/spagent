@@ -48,6 +48,10 @@ def snapshot() -> dict:
         resolution = material.get_resolution()
         result["resolution"] = [resolution.width, resolution.height]
         result["layers"] = [_node_info(n) for n in sp.layerstack.get_root_layer_nodes(stack)]
+        try:
+            result["selected_nodes"] = [_node_info(n) for n in sp.layerstack.get_selected_nodes(stack)]
+        except Exception:
+            result["selected_nodes"] = []
     except Exception as exc:
         result["active_stack_error"] = f"{type(exc).__name__}: {exc}"
         result["layers"] = []
