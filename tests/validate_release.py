@@ -31,12 +31,15 @@ def test_installer_detection_logic():
     assert "DetectPainters" in iss
     assert "GetVersionNumbersString" in iss
     assert "RegGetSubkeyNames" in iss
+    assert "RegQueryStringValue" in iss
     assert "HKEY_LOCAL_MACHINE_64" in iss
     assert "HKEY_LOCAL_MACHINE_32" in iss
     assert "HKEY_CURRENT_USER_64" in iss
     assert "HKEY_CURRENT_USER_32" in iss
     assert "InstallLocation" in iss
     assert "DisplayIcon" in iss
+    assert "App Paths" in iss
+    assert "PainterAppPathsKey" in iss
     assert "Adobe Substance 3D Painter*" in iss
     assert "Adobe Substance 3D Painter.exe" in iss
     assert "DisableDirPage=yes" in iss
@@ -47,3 +50,21 @@ def test_installer_detection_logic():
     assert "InitializeUninstall" in iss
     assert "LowerCase(PluginDir)" in iss
     assert "\\python\\plugins" in iss
+
+
+def test_custom_non_c_drive_is_supported_by_detection_design():
+    iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
+
+    # Real-world regression case: a valid Painter installation may live here.
+    # This path is a test fixture only and must never be hard-coded into production.
+    custom_path = r"D:\sp11.0\Adobe Substance 3D Painter.exe"
+
+    assert custom_path.startswith("D:\\")
+    assert "InstallLocation" in iss
+    assert "DisplayIcon" in iss
+    assert "App Paths" in iss
+
+    # Production code must not force installation into the Painter executable directory.
+    assert 'DefaultDirName={code:GetPainterPluginDir}' in iss
+    assert r"GetModernPainterRoot() + '\python\plugins'" in iss
+    assert custom_path not in iss
