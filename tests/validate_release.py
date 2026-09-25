@@ -39,3 +39,6 @@ def test_installer_detection_logic():
     assert "DisplayIcon" in iss
     assert "Adobe Substance 3D Painter*" in iss
     assert "Adobe Substance 3D Painter.exe" in iss
+    assert "DisableDirPage=yes" in iss
+    assert "GetModernPainterRoot()" in iss
+    assert "GetLegacyPainterRoot()" in iss
