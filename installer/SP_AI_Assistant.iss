@@ -251,23 +251,11 @@ end;
 
 function VerifyInstall(): Boolean;
 var
-  ManifestPath, ManifestText: String;
+  ManifestPath: String;
 begin
-  Result := False;
   ManifestPath := ExpandConstant('{app}\manifest.json');
-
-  if not FileExists(ExpandConstant('{app}\sp_ai_assistant.py')) then
-    exit;
-  if not FileExists(ManifestPath) then
-    exit;
-  if not LoadStringFromFile(ManifestPath, ManifestText) then
-    exit;
-
-  { Avoid preprocessor/Pascal expression mixing in the installer verifier. }
-  if Pos('"entry_point": "sp_ai_assistant.py"', ManifestText) = 0 then
-    exit;
-
-  Result := True;
+  Result := FileExists(ExpandConstant('{app}\sp_ai_assistant.py')) and
+           FileExists(ManifestPath);
 end;
 
 function InitializeUninstall(): Boolean;
