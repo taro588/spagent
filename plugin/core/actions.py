@@ -11,6 +11,7 @@ SUPPORTED_ACTIONS = {
     "set_active_channels",
     "set_projection_mode",
     "set_projection_scale",
+    "set_fill_property",
     "add_generator",
     "add_filter",
     "add_smart_mask",
@@ -159,6 +160,36 @@ def execute_plan(plan: dict) -> dict:
                 params.projection_3d.scale = [float(v) for v in scale]
                 node.set_projection_parameters(params)
                 results.append({"action": kind, "target": node.get_name(), "scale": params.projection_3d.scale})
+
+            elif kind == "set_fill_property":
+                if not created:
+                    raise ActionError("set_fill_property 没有可作用的最近创建节点。")
+                node = created[-1]
+                if not hasattr(node, "get_material"):
+                    raise ActionError("目标节点不支持材质属性。")
+                material = node.get_material()
+                channel = str(action.get("channel") or "").strip()
+                property_name = str(action.get("property") or "").strip()
+                if not channel or not property_name:
+                    raise ActionError("set_fill_property 需要 channel 和 property。")
+                value = action.get("value")
+                try:
+                    channel_enum = getattr(sp.layerstack.ChannelType, channel)
+                except AttributeError:
+                    raise ActionError(f"未知通道: {channel}")
+                try:
+                    material.set_channel_property(channel_enum, property_name, value)
+                except Exception as exc:
+                    raise ActionError(
+                        f"无法修改 Fill 属性 {channel}.{property_name}: {type(exc).__name__}: {exc}"
+                    )
+                results.append({
+                    "action": kind,
+                    "target": node.get_name(),
+                    "channel": channel,
+                    "property": property_name,
+                    "value": value,
+                })
 
             elif kind == "set_opacity":
                 if not created:
