@@ -1,7 +1,7 @@
 {
   "id": "com.taro588.sp-ai-assistant",
   "name": "SP AI Assistant",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "api": "python",
   "min_painter_version": "7.2.0",
   "max_tested_painter_version": null,
@@ -13,7 +13,10 @@
     "model_selection",
     "ai_chat",
     "encrypted_api_key_storage",
-    "multi_provider"
+    "multi_provider",
+    "painter_context",
+    "controlled_actions",
+    "layer_operations"
   ],
   "compatibility": {
     "7.2.0-10.0.x": "PySide2",
