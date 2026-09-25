@@ -277,7 +277,7 @@ class ChatDock(QtWidgets.QWidget):
         }
         messages = list(self._messages) + [correction]
         self._append("系统", "正在根据验证结果请求 AI 生成修正计划……")
-        self._start_request(messages, self._correction_done)
+        QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, self._correction_done))
 
     @QtCore.Slot(str, str)
     def _correction_done(self, state, text):
