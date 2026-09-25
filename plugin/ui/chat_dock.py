@@ -15,8 +15,25 @@ SYSTEM_PROMPT = """你是 SP AI Assistant，运行在 Adobe Substance 3D Painter
 你可以读取当前 Painter 上下文。
 当用户要求修改 Painter 时，只生成 JSON 操作计划，不要声称已经执行。
 允许动作：create_fill_layer、create_paint_layer、create_group、add_mask、set_opacity、add_generator、add_filter、add_smart_mask、add_smart_material、set_fill_material、set_active_channels、set_projection_mode、set_projection_scale、set_fill_property、set_source_parameters、set_effect_parameters、verify_last_created_parameters、rename_selected、delete_selected、select_last_created、export_textures。
-删除和导出属于高影响操作，必须先生成计划并由用户点击执行。
+删除、导出和批量修改属于高影响操作，必须生成计划并由用户明确确认后执行。
 资源名称必须来自当前 Painter 可搜索资源，不要编造。"""
+
+# These actions always require explicit confirmation, including in auto mode.
+# Keep this list conservative: changing many existing nodes or exporting/deleting
+# project data should never happen silently.
+HIGH_IMPACT_ACTIONS = {
+    "delete_selected",
+    "export_textures",
+    "rename_selected",
+    "set_opacity",
+    "set_fill_property",
+    "set_source_parameters",
+    "set_effect_parameters",
+    "set_active_channels",
+    "set_projection_mode",
+    "set_projection_scale",
+}
+
 
 class _Worker(QtCore.QObject):
     finished = QtCore.Signal(str, str)
@@ -76,6 +93,19 @@ class ChatDock(QtWidgets.QWidget):
         settings.addWidget(QtWidgets.QLabel("Base URL"), 3, 0)
         self.base_url = QtWidgets.QLineEdit()
         settings.addWidget(self.base_url, 3, 1)
+
+        settings.addWidget(QtWidgets.QLabel("执行模式"), 4, 0)
+        self.execution_mode = QtWidgets.QComboBox()
+        self.execution_mode.addItem("仅生成计划", "plan")
+        self.execution_mode.addItem("每次确认", "confirm")
+        self.execution_mode.addItem("低风险自动执行", "auto")
+        self.execution_mode.setCurrentIndex(1)
+        self.execution_mode.setToolTip(
+            "仅生成计划：只生成计划，不执行。\n"
+            "每次确认：每个计划执行前都确认。\n"
+            "低风险自动执行：仅自动执行低风险动作；高影响动作仍需确认。"
+        )
+        settings.addWidget(self.execution_mode, 4, 1)
         root.addLayout(settings)
 
         buttons = QtWidgets.QHBoxLayout()
@@ -152,17 +182,63 @@ class ChatDock(QtWidgets.QWidget):
             self.status.setText("✗ 上下文读取失败")
             self._append("错误", str(exc))
 
+    def _plan_actions(self, plan):
+        return [
+            action for action in plan.get("actions", [])
+            if isinstance(action, dict) and action.get("action")
+        ]
+
+    def _high_impact_actions(self, plan):
+        return [
+            action for action in self._plan_actions(plan)
+            if action.get("action") in HIGH_IMPACT_ACTIONS
+        ]
+
+    def _confirm_execution(self, plan, high_impact=False):
+        if high_impact:
+            title = "高影响操作确认"
+            message = (
+                "该计划包含删除、导出或可能批量修改现有 Painter 内容的操作。\n"
+                "此类操作在任何执行模式下都必须明确确认。\n\n"
+                "确认继续执行吗？"
+            )
+        else:
+            title = "执行计划确认"
+            message = "AI 已生成操作计划。确认执行吗？"
+        answer = QtWidgets.QMessageBox.warning(
+            self,
+            title,
+            message,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return answer == QtWidgets.QMessageBox.Yes
+
     def _execute_last_plan(self):
         if not self._last_plan:
             self.status.setText("✗ 还没有可执行的操作计划")
             return
+
         plan = self._last_plan
-        dangerous = {"delete_selected", "export_textures"}
-        if any(action.get("action") in dangerous for action in plan.get("actions", [])):
-            answer = QtWidgets.QMessageBox.warning(self, "高影响操作确认", "该计划包含删除或贴图导出操作。\n确认继续执行吗？", QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
-            if answer != QtWidgets.QMessageBox.Yes:
+        actions = self._plan_actions(plan)
+        if not actions:
+            self.status.setText("✗ 操作计划为空")
+            return
+
+        mode = self.execution_mode.currentData()
+        high_impact = bool(self._high_impact_actions(plan))
+
+        if mode == "plan":
+            self.status.setText("✓ 当前为“仅生成计划”，未执行")
+            return
+
+        # Confirm mode asks for every plan. Auto mode only skips confirmation
+        # when every action is outside the conservative high-impact set.
+        if mode == "confirm" or high_impact:
+            if not self._confirm_execution(plan, high_impact=high_impact):
                 self.status.setText("已取消执行")
                 return
+
         try:
             result = execute_plan(plan)
             self._last_execution = result
@@ -220,6 +296,7 @@ class ChatDock(QtWidgets.QWidget):
             plan = None
         if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
             self._last_plan = plan
+            self._show_plan_preview(plan)
             self.status.setText("✓ 已根据实际结果生成修正计划，请检查后执行")
         else:
             self.status.setText("✗ AI 没有返回有效修正计划")
@@ -312,6 +389,8 @@ class ChatDock(QtWidgets.QWidget):
                 self._last_plan = plan
                 self._show_plan_preview(plan)
                 self.status.setText("✓ 已生成操作计划，请检查“操作预览”后执行")
+                if self.execution_mode.currentData() == "auto":
+                    self._auto_execute_if_safe(plan)
             else:
                 self.status.setText("✓ 已收到模型回复")
         else:
@@ -320,12 +399,19 @@ class ChatDock(QtWidgets.QWidget):
             self._append("错误", text)
             self.status.setText("✗ 请求失败")
 
+    def _auto_execute_if_safe(self, plan):
+        if self._high_impact_actions(plan):
+            self.status.setText("✓ 已生成计划；包含高影响操作，等待明确确认")
+            return
+        self._execute_last_plan()
+
     def _show_plan_preview(self, plan):
         lines = []
         for index, action in enumerate(plan.get("actions", []), 1):
             kind = action.get("action", "unknown")
             detail = {k: v for k, v in action.items() if k != "action"}
-            lines.append(f"{index}. {kind}")
+            marker = "【需确认】" if kind in HIGH_IMPACT_ACTIONS else "【低风险】"
+            lines.append(f"{index}. {marker} {kind}")
             if detail:
                 lines.append("   " + json.dumps(detail, ensure_ascii=False, default=str))
         self.plan_preview.setPlainText("\n".join(lines) if lines else "（空操作计划）")
