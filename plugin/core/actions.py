@@ -151,7 +151,7 @@ def execute_plan(plan: dict) -> dict:
                 channels = set()
                 for name in names:
                     try:
-                        channels.add(getattr(sp.layerstack.ChannelType, str(name)))
+                        channels.add(getattr(sp.textureset.ChannelType, str(name)))
                     except AttributeError:
                         raise ActionError(f"未知通道: {name}")
                 node.active_channels = channels
@@ -228,11 +228,16 @@ def execute_plan(plan: dict) -> dict:
                 values = action.get("parameters")
                 if not isinstance(values, dict) or not values:
                     raise ActionError("parameters 必须是非空对象。")
-                available = node.get_parameters()
-                unknown = [name for name in values if name not in available]
+                current = node.get_parameters()
+                unknown = [name for name in values if not hasattr(current, name)]
                 if unknown:
                     raise ActionError("未知参数: " + ", ".join(unknown))
-                node.set_parameters(values)
+                for name, value in values.items():
+                    try:
+                        setattr(current, name, value)
+                    except Exception as exc:
+                        raise ActionError(f"无法设置 Effect 参数 {name}: {exc}") from exc
+                node.set_parameters(current)
                 results.append({"action": kind, "target": node.get_name(), "parameters": values})
 
             elif kind == "verify_last_created_parameters":
@@ -338,11 +343,14 @@ def execute_plan(plan: dict) -> dict:
                 if not export_path:
                     raise ActionError("export_textures 需要 export_path。")
                 preset_name = str(action.get("preset") or "PBR Metallic Roughness").strip()
-                preset_id = sp.resource.ResourceID(context="starter_assets", name=preset_name)
+                presets = sp.export.list_predefined_export_presets()
+                preset = next((item for item in presets if item.name == preset_name), None)
+                if preset is None:
+                    raise ActionError(f"找不到预定义导出预设: {preset_name}")
                 config = {
                     "exportShaderParams": False,
                     "exportPath": export_path,
-                    "defaultExportPreset": preset_id.url(),
+                    "defaultExportPreset": preset.url,
                     "exportList": [{"rootPath": _active_stack().name()}],
                     "exportParameters": [{
                         "parameters": {
