@@ -172,6 +172,7 @@ def execute_plan(plan: dict) -> dict:
 
     created = []
     results = []
+    pending_selection = None
 
     def selected_nodes():
         nodes = sp.layerstack.get_selected_nodes(_active_stack())
@@ -427,7 +428,7 @@ def execute_plan(plan: dict) -> dict:
             elif kind == "select_last_created":
                 if not created:
                     raise ActionError("没有最近创建的节点。")
-                sp.layerstack.set_selected_nodes([created[-1]])
+                pending_selection = created[-1]
                 results.append({"action": kind, "uid": created[-1].uid()})
 
             elif kind == "export_textures":
