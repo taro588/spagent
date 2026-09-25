@@ -12,18 +12,20 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.2.0"
+    assert data["version"] == "0.3.0"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["compatibility"]["7.2.0-10.0.x"] == "PySide2"
     assert data["compatibility"]["10.1.0+"] == "PySide6"
     assert "ai_chat" in data["capabilities"]
     assert "multi_provider" in data["capabilities"]
+    assert "painter_context" in data["capabilities"]
+    assert "controlled_actions" in data["capabilities"]
 
 
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.2.0"' in iss
+    assert '#define MyAppVersion "0.3.0"' in iss
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
     assert 'Source: "..\\plugin\\core\\*"' in iss
@@ -89,6 +91,18 @@ def test_ai_modules():
     assert "测试连接" in dock
     assert "AIProvider" not in client
     assert "PySide2" in qt and "PySide6" in qt
+
+
+def test_context_and_actions():
+    context = (ROOT / "plugin" / "core" / "painter_context.py").read_text(encoding="utf-8")
+    actions = (ROOT / "plugin" / "core" / "actions.py").read_text(encoding="utf-8")
+    assert "get_active_stack" in context
+    assert "get_root_layer_nodes" in context
+    assert "ScopedModification" in actions
+    assert "insert_fill" in actions
+    assert "insert_paint" in actions
+    assert "add_mask" in actions
+    assert "set_opacity" in actions
 
 
 def test_plugin_entry():
