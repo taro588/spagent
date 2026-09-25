@@ -382,11 +382,14 @@ def execute_plan(plan: dict) -> dict:
                 preset = next((item for item in presets if item.name == preset_name), None)
                 if preset is None:
                     raise ActionError(f"找不到预定义导出预设: {preset_name}")
+                stack = _active_stack()
+                if stack is None:
+                    raise ActionError("当前没有可导出的 Texture Set。")
                 config = {
                     "exportShaderParams": False,
                     "exportPath": export_path,
                     "defaultExportPreset": preset.url,
-                    "exportList": [{"rootPath": _active_stack().name()}],
+                    "exportList": [{"rootPath": stack.name()}],
                     "exportParameters": [{
                         "parameters": {
                             "dithering": True,
@@ -394,15 +397,26 @@ def execute_plan(plan: dict) -> dict:
                         }
                     }],
                 }
-                export_list = sp.export.list_project_textures(config)
+                try:
+                    export_list = sp.export.list_project_textures(config)
+                except Exception as exc:
+                    raise ActionError(f"导出配置无效: {exc}") from exc
                 if not export_list:
                     raise ActionError("当前配置没有可导出的贴图。")
-                export_result = sp.export.export_project_textures(config)
+                try:
+                    export_result = sp.export.export_project_textures(config)
+                except Exception as exc:
+                    raise ActionError(f"纹理导出失败: {exc}") from exc
+                status = getattr(export_result.status, "name", str(export_result.status))
+                if status.lower() != "success":
+                    raise ActionError(
+                        getattr(export_result, "message", "") or f"导出状态: {status}"
+                    )
                 results.append({
                     "action": kind,
-                    "status": getattr(export_result.status, "name", str(export_result.status)),
-                    "message": export_result.message,
-                    "textures": export_result.textures,
+                    "status": status,
+                    "message": getattr(export_result, "message", ""),
+                    "textures": getattr(export_result, "textures", {}) or {},
                 })
 
             elif kind == "set_fill_material":
