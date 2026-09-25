@@ -12,6 +12,8 @@ SUPPORTED_ACTIONS = {
     "set_projection_mode",
     "set_projection_scale",
     "set_fill_property",
+    "set_source_parameters",
+    "set_effect_parameters",
     "add_generator",
     "add_filter",
     "add_smart_mask",
@@ -163,33 +165,55 @@ def execute_plan(plan: dict) -> dict:
 
             elif kind == "set_fill_property":
                 if not created:
-                    raise ActionError("set_fill_property 没有可作用的最近创建节点。")
+                    raise ActionError("set_fill_property 没有可作用的最近节点。")
                 node = created[-1]
-                if not hasattr(node, "get_material"):
-                    raise ActionError("目标节点不支持材质属性。")
-                material = node.get_material()
-                channel = str(action.get("channel") or "").strip()
+                if not isinstance(node, (sp.layerstack.FillLayerNode, sp.layerstack.FillEffectNode)):
+                    raise ActionError("set_fill_property 只能作用于 Fill Layer/Fill Effect。")
+                source = node.get_material_source()
+                if not source or not hasattr(source, "get_parameters"):
+                    raise ActionError("当前 Fill 没有可编辑的 Substance 参数。")
                 property_name = str(action.get("property") or "").strip()
-                if not channel or not property_name:
-                    raise ActionError("set_fill_property 需要 channel 和 property。")
+                if not property_name:
+                    raise ActionError("set_fill_property 需要 property。")
                 value = action.get("value")
-                try:
-                    channel_enum = getattr(sp.layerstack.ChannelType, channel)
-                except AttributeError:
-                    raise ActionError(f"未知通道: {channel}")
-                try:
-                    material.set_channel_property(channel_enum, property_name, value)
-                except Exception as exc:
-                    raise ActionError(
-                        f"无法修改 Fill 属性 {channel}.{property_name}: {type(exc).__name__}: {exc}"
-                    )
-                results.append({
-                    "action": kind,
-                    "target": node.get_name(),
-                    "channel": channel,
-                    "property": property_name,
-                    "value": value,
-                })
+                available = source.get_parameters()
+                if property_name not in available:
+                    raise ActionError(f"当前材质不存在参数: {property_name}")
+                source.set_parameters({property_name: value})
+                results.append({"action": kind, "target": node.get_name(), "property": property_name, "value": value})
+
+            elif kind == "set_source_parameters":
+                if not created:
+                    raise ActionError("set_source_parameters 没有可作用的最近节点。")
+                node = created[-1]
+                source = node.get_material_source() if hasattr(node, "get_material_source") else None
+                if not source or not hasattr(source, "get_parameters"):
+                    raise ActionError("目标节点没有可编辑的 Substance source。")
+                values = action.get("parameters")
+                if not isinstance(values, dict) or not values:
+                    raise ActionError("parameters 必须是非空对象。")
+                available = source.get_parameters()
+                unknown = [name for name in values if name not in available]
+                if unknown:
+                    raise ActionError("未知参数: " + ", ".join(unknown))
+                source.set_parameters(values)
+                results.append({"action": kind, "target": node.get_name(), "parameters": values})
+
+            elif kind == "set_effect_parameters":
+                if not created:
+                    raise ActionError("set_effect_parameters 没有可作用的最近节点。")
+                node = created[-1]
+                if not hasattr(node, "get_parameters") or not hasattr(node, "set_parameters"):
+                    raise ActionError("目标 Effect 不支持参数编辑。")
+                values = action.get("parameters")
+                if not isinstance(values, dict) or not values:
+                    raise ActionError("parameters 必须是非空对象。")
+                available = node.get_parameters()
+                unknown = [name for name in values if name not in available]
+                if unknown:
+                    raise ActionError("未知参数: " + ", ".join(unknown))
+                node.set_parameters(values)
+                results.append({"action": kind, "target": node.get_name(), "parameters": values})
 
             elif kind == "set_opacity":
                 if not created:
