@@ -1,6 +1,6 @@
-; SP AI Assistant 0.1.0
+; SP AI Assistant 0.2.0
 #define MyAppName "SP AI Assistant"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppPublisher "taro588"
 
 [Setup]
@@ -22,10 +22,14 @@ ArchitecturesInstallIn64BitMode=x64compatible
 [Files]
 Source: "..\plugin\sp_ai_assistant.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\plugin\manifest.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\plugin\core\*"; DestDir: "{app}\core"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\plugin\ui\*"; DestDir: "{app}\ui"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [UninstallDelete]
 Type: files; Name: "{app}\sp_ai_assistant.py"
 Type: files; Name: "{app}\manifest.json"
+Type: filesandordirs; Name: "{app}\core"
+Type: filesandordirs; Name: "{app}\ui"
 
 [Code]
 const
@@ -337,7 +341,7 @@ begin
       MsgBox(
         'SP AI Assistant 安装成功。' + NL + NL +
         '安装位置:' + NL + ExpandConstant('{app}') + NL + NL +
-        '已验证插件入口文件和 manifest。' + NL + NL +
+        '已验证插件入口文件、core 和 UI 文件。' + NL + NL +
         '请重新启动 Substance 3D Painter。' + NL +
         '启动后打开 Python 菜单，点击 SP AI Assistant 以启用插件。',
         mbInformation, MB_OK)
