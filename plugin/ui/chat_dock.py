@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import threading
+from core.ai_client import AIError, PROVIDERS, chat
+from core.qt_compat import qt_modules
+from core.settings import provider_config, save_provider_config
 
-from PySide6 import QtCore, QtWidgets
-
-from ..core.ai_client import AIError, PROVIDERS, chat
-from ..core.settings import provider_config, save_provider_config
+QtCore, QtWidgets = qt_modules()
 
 
 SYSTEM_PROMPT = """你是 SP AI Assistant，运行在 Adobe Substance 3D Painter 内。
 你的职责是帮助用户进行游戏材质、PBR、Texture Set、图层、Mask、Generator、Filter 和导出工作。
-当前阶段你只负责对话和制定操作计划，不要声称已经执行了 Painter 操作。
-回答尽量给出可执行的步骤，并明确需要调用哪些 Painter 官方 API。"""
+当前阶段你只负责对话、分析和制定操作计划，不要声称已经执行了 Painter 操作。
+回答尽量给出可执行的步骤，并明确未来需要调用哪些 Painter 官方 API。"""
 
 
 class _Worker(QtCore.QObject):
@@ -24,8 +23,7 @@ class _Worker(QtCore.QObject):
     @QtCore.Slot()
     def run(self):
         try:
-            result = chat(*self.args)
-            self.finished.emit("ok", result)
+            self.finished.emit("ok", chat(*self.args))
         except Exception as exc:
             self.finished.emit("error", str(exc))
 
@@ -35,7 +33,7 @@ class ChatDock(QtWidgets.QWidget):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
-        self.resize(520, 720)
+        self.resize(560, 760)
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._thread = None
         self._worker = None
@@ -44,6 +42,7 @@ class ChatDock(QtWidgets.QWidget):
 
     def _build_ui(self, version_text):
         root = QtWidgets.QVBoxLayout(self)
+
         header = QtWidgets.QHBoxLayout()
         title = QtWidgets.QLabel("<b>SP AI Assistant</b>")
         header.addWidget(title)
@@ -54,7 +53,7 @@ class ChatDock(QtWidgets.QWidget):
         settings = QtWidgets.QGridLayout()
         settings.addWidget(QtWidgets.QLabel("模型提供商"), 0, 0)
         self.provider = QtWidgets.QComboBox()
-        self.provider.addItems(PROVIDERS.keys())
+        self.provider.addItems(list(PROVIDERS.keys()))
         settings.addWidget(self.provider, 0, 1)
 
         settings.addWidget(QtWidgets.QLabel("模型"), 1, 0)
@@ -75,12 +74,15 @@ class ChatDock(QtWidgets.QWidget):
         root.addLayout(settings)
 
         buttons = QtWidgets.QHBoxLayout()
-        save = QtWidgets.QPushButton("保存设置")
-        save.clicked.connect(self._save)
-        clear = QtWidgets.QPushButton("清空对话")
-        clear.clicked.connect(self._clear)
-        buttons.addWidget(save)
-        buttons.addWidget(clear)
+        self.save_button = QtWidgets.QPushButton("保存设置")
+        self.save_button.clicked.connect(self._save)
+        self.test_button = QtWidgets.QPushButton("测试连接")
+        self.test_button.clicked.connect(self._test_connection)
+        self.clear_button = QtWidgets.QPushButton("清空对话")
+        self.clear_button.clicked.connect(self._clear)
+        buttons.addWidget(self.save_button)
+        buttons.addWidget(self.test_button)
+        buttons.addWidget(self.clear_button)
         root.addLayout(buttons)
 
         self.status = QtWidgets.QLabel("未配置 AI")
@@ -92,7 +94,7 @@ class ChatDock(QtWidgets.QWidget):
 
         bottom = QtWidgets.QHBoxLayout()
         self.input = QtWidgets.QLineEdit()
-        self.input.setPlaceholderText("例如：帮我分析当前材质应该怎么做成旧水泥……")
+        self.input.setPlaceholderText("例如：帮我制定旧水泥材质的制作方案")
         self.input.returnPressed.connect(self._send)
         bottom.addWidget(self.input, 1)
         self.send = QtWidgets.QPushButton("发送")
@@ -104,6 +106,8 @@ class ChatDock(QtWidgets.QWidget):
 
     def _load_provider(self):
         provider = self.provider.currentText()
+        if not provider:
+            return
         info = PROVIDERS[provider]
         config = provider_config(info["id"])
         self.model.blockSignals(True)
@@ -119,23 +123,34 @@ class ChatDock(QtWidgets.QWidget):
     def _save(self):
         provider = self.provider.currentText()
         info = PROVIDERS[provider]
-        save_provider_config(provider=info["id"], model=self.model.currentText().strip(),
-                             base_url=self.base_url.text().strip(), api_key=self.key.text().strip())
+        save_provider_config(
+            provider=info["id"],
+            model=self.model.currentText().strip(),
+            base_url=self.base_url.text().strip(),
+            api_key=self.key.text().strip(),
+        )
         self.status.setText("✓ 设置已保存（API Key 使用 Windows DPAPI 加密）")
 
     def _clear(self):
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.history.clear()
+        self.status.setText("对话已清空")
 
-    def _append(self, role, text):
-        self.history.appendPlainText(f"{role}：\n{text}\n")
-        self.history.verticalScrollBar().setValue(self.history.verticalScrollBar().maximum())
+    def _append(self, role, message):
+        self.history.appendPlainText(f"{role}：\n{message}\n")
+        self.history.verticalScrollBar().setValue(
+            self.history.verticalScrollBar().maximum()
+        )
 
-    def _send(self):
-        text = self.input.text().strip()
-        if not text or self._thread is not None:
+    def _set_busy(self, busy):
+        self.send.setEnabled(not busy)
+        self.test_button.setEnabled(not busy)
+        self.save_button.setEnabled(not busy)
+        self.status.setText("正在请求模型……" if busy else self.status.text())
+
+    def _start_request(self, messages, on_result):
+        if self._thread is not None:
             return
-        self._save()
         provider = self.provider.currentText()
         info = PROVIDERS[provider]
         key = self.key.text().strip()
@@ -144,23 +159,45 @@ class ChatDock(QtWidgets.QWidget):
         if not key or not model:
             self.status.setText("✗ 请先设置 API Key 和模型")
             return
-
-        self.input.clear()
-        self._messages.append({"role": "user", "content": text})
-        self._append("你", text)
-        self.status.setText("正在请求模型……")
-        self.send.setEnabled(False)
-
+        self._set_busy(True)
         self._thread = QtCore.QThread()
-        self._worker = _Worker(provider, model, key, base, list(self._messages))
+        self._worker = _Worker(provider, model, key, base, messages)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
-        self._worker.finished.connect(self._done)
+        self._worker.finished.connect(on_result)
         self._worker.finished.connect(self._thread.quit)
         self._thread.finished.connect(self._thread.deleteLater)
         self._thread.finished.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._thread_finished)
         self._thread.start()
+
+    def _test_connection(self):
+        self._save()
+        messages = [
+            {"role": "system", "content": "只回复 OK，不要添加其他内容。"},
+            {"role": "user", "content": "连接测试"},
+        ]
+        self.status.setText("正在测试连接……")
+        self._start_request(messages, self._connection_result)
+
+    @QtCore.Slot(str, str)
+    def _connection_result(self, state, text):
+        if state == "ok":
+            self.status.setText("✓ API 连接成功")
+            self._append("连接测试", text)
+        else:
+            self.status.setText("✗ API 连接失败")
+            self._append("连接错误", text)
+
+    def _send(self):
+        text = self.input.text().strip()
+        if not text or self._thread is not None:
+            return
+        self._save()
+        self.input.clear()
+        self._messages.append({"role": "user", "content": text})
+        self._append("你", text)
+        self._start_request(list(self._messages), self._done)
 
     @QtCore.Slot(str, str)
     def _done(self, state, text):
@@ -176,7 +213,7 @@ class ChatDock(QtWidgets.QWidget):
     def _thread_finished(self):
         self._thread = None
         self._worker = None
-        self.send.setEnabled(True)
+        self._set_busy(False)
 
 
 def build_chat_dock(version_text="0.2.0"):
