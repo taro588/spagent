@@ -131,7 +131,7 @@ def validate_plan(plan: dict) -> dict:
         "add_smart_material": ("name",),
         "set_fill_material": ("name",),
         "rename_selected": ("name",),
-        "export_textures": ("path",),
+        "export_textures": ("export_path",),
     }
     for index, action in enumerate(actions, 1):
         if not isinstance(action, dict):
