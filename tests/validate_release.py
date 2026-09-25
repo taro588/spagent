@@ -162,6 +162,14 @@ def test_chat_dock_has_plan_preview_and_confirmation():
     assert "export_textures" in text
 
 
+def test_chat_dock_has_robust_plan_parser():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+    assert "def _parse_plan_response" in text
+    assert "json.JSONDecoder()" in text
+    assert "_parse_plan_response(text)" in text
+
+
 def test_chat_dock_has_execution_modes_and_high_impact_guard():
     root = Path(__file__).resolve().parents[1]
     text = (root / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
