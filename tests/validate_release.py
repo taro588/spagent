@@ -15,6 +15,7 @@ def test_manifest():
     assert data["version"] == "0.3.0"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
+    assert data["max_tested_painter_version"] == "11.0.x"
     assert data["compatibility"]["7.2.0-10.0.x"] == "PySide2"
     assert data["compatibility"]["10.1.0+"] == "PySide6"
     assert "ai_chat" in data["capabilities"]
@@ -60,7 +61,8 @@ def test_installer_detection_logic():
     assert "VerifyInstall" in iss
     assert "FileExists(ExpandConstant('{app}\\sp_ai_assistant.py'))" in iss
     assert "FileExists(ManifestPath)" in iss
-    assert "filesandordirs" in iss
+    assert 'Type: files; Name: "{app}\\core\\*"' in iss
+    assert 'Type: files; Name: "{app}\\ui\\*"' in iss
 
 
 def test_custom_non_c_drive_is_supported_by_detection_design():
