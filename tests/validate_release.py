@@ -12,7 +12,7 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.1.0"
+    assert data["version"] == "0.1.1"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["compatibility"]["7.2.0-10.0.x"] == "PySide2"
@@ -57,17 +57,11 @@ def test_installer_detection_logic():
 
 def test_custom_non_c_drive_is_supported_by_detection_design():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
-
-    # Real-world regression case: a valid Painter installation may live here.
-    # This path is a test fixture only and must never be hard-coded into production.
     custom_path = r"D:\sp11.0\Adobe Substance 3D Painter.exe"
-
     assert custom_path.startswith("D:\\")
     assert "InstallLocation" in iss
     assert "DisplayIcon" in iss
     assert "App Paths" in iss
-
-    # Production code must not force installation into the Painter executable directory.
     assert 'DefaultDirName={code:GetPainterPluginDir}' in iss
     assert r"GetModernPainterRoot() + '\python\plugins'" in iss
     assert custom_path not in iss
