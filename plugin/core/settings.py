@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import json
+import os
 from ctypes import wintypes
-
-from PySide6 import QtCore
+from pathlib import Path
 
 _APP = "SP AI Assistant"
-_ORG = "taro588"
-_SETTINGS = QtCore.QSettings(_ORG, _APP)
+_CONFIG_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / _APP
+_CONFIG_FILE = _CONFIG_DIR / "settings.json"
 
 
 class _DATA_BLOB(ctypes.Structure):
@@ -21,9 +22,9 @@ def _blob(data: bytes):
 
 
 def _protect(data: bytes) -> bytes:
-    if not hasattr(ctypes.windll, "crypt32"):
+    if not hasattr(ctypes, "windll"):
         raise RuntimeError("Windows DPAPI unavailable")
-    inp, keep = _blob(data)
+    inp, _keep = _blob(data)
     out = _DATA_BLOB()
     if not ctypes.windll.crypt32.CryptProtectData(
         ctypes.byref(inp), "SP AI Assistant", None, None, None, 0, ctypes.byref(out)
@@ -36,7 +37,9 @@ def _protect(data: bytes) -> bytes:
 
 
 def _unprotect(data: bytes) -> bytes:
-    inp, keep = _blob(data)
+    if not hasattr(ctypes, "windll"):
+        raise RuntimeError("Windows DPAPI unavailable")
+    inp, _keep = _blob(data)
     out = _DATA_BLOB()
     if not ctypes.windll.crypt32.CryptUnprotectData(
         ctypes.byref(inp), None, None, None, None, 0, ctypes.byref(out)
@@ -48,13 +51,29 @@ def _unprotect(data: bytes) -> bytes:
         ctypes.windll.kernel32.LocalFree(out.pbData)
 
 
+def _read() -> dict:
+    try:
+        return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write(data: dict) -> None:
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = _CONFIG_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(_CONFIG_FILE)
+
+
 def set_value(key: str, value: str) -> None:
-    _SETTINGS.setValue(key, value)
-    _SETTINGS.sync()
+    data = _read()
+    data[key] = value
+    _write(data)
 
 
 def get_value(key: str, default: str = "") -> str:
-    return str(_SETTINGS.value(key, default))
+    value = _read().get(key, default)
+    return str(value) if value is not None else default
 
 
 def set_secret(key: str, value: str) -> None:
@@ -85,3 +104,9 @@ def save_provider_config(provider: str, model: str, base_url: str, api_key: str)
     set_value(provider + "/base_url", base_url)
     if api_key:
         set_secret(provider + "/api_key", api_key)
+
+
+def clear_provider_secret(provider: str) -> None:
+    data = _read()
+    data.pop("secret/" + provider + "/api_key", None)
+    _write(data)
