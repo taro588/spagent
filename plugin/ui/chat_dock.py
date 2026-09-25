@@ -9,7 +9,7 @@ QtCore, QtWidgets = qt_modules()
 
 SYSTEM_PROMPT = """你是 SP AI Assistant，运行在 Adobe Substance 3D Painter 内。
 你的职责是帮助用户进行游戏材质、PBR、Texture Set、图层、Mask、Generator、Filter 和导出工作。
-你可以读取当前 Painter 上下文。当用户要求修改 Painter 时，只生成 JSON 操作计划，不要声称已经执行。允许动作：create_fill_layer、create_paint_layer、create_group、add_mask、set_opacity。
+你可以读取当前 Painter 上下文。当用户要求修改 Painter 时，只生成 JSON 操作计划，不要声称已经执行。允许动作：create_fill_layer、create_paint_layer、create_group、add_mask、set_opacity、add_generator、add_filter、add_smart_mask、add_smart_material、set_fill_material。资源名称必须来自当前 Painter 可搜索资源，不要编造资源名。
 回答尽量给出可执行的步骤，并明确未来需要调用哪些 Painter 官方 API。"""
 
 
@@ -94,7 +94,7 @@ class ChatDock(QtWidgets.QWidget):
 
         bottom = QtWidgets.QHBoxLayout()
         self.input = QtWidgets.QLineEdit()
-        self.input.setPlaceholderText("例如：帮我制定旧水泥材质的制作方案")
+        self.input.setPlaceholderText("例如：创建旧水泥 Fill Layer，并添加一个可用 Generator")
         self.input.returnPressed.connect(self._send)
         bottom.addWidget(self.input, 1)
         self.send = QtWidgets.QPushButton("发送")
