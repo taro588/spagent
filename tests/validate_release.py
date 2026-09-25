@@ -112,6 +112,9 @@ def test_context_and_actions():
     assert "delete_node" in actions
     assert "export_project_textures" in actions
     assert "list_project_textures" in actions
+    assert "rename_selected" in actions
+    assert "delete_selected" in actions
+    assert "export_textures" in actions
 
 
 def test_plugin_entry():
