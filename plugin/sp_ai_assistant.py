@@ -7,71 +7,26 @@ import sys
 import substance_painter
 import substance_painter.ui
 
+from core.qt_compat import qt_modules
+from core.self_check import run_self_check
+from ui.chat_dock import ChatDock
+
 _widgets = []
-
-
-def _qt_widgets():
-    """Use the Qt binding shipped by the installed Painter version."""
-    version = substance_painter.application.version_info()
-    if version < (10, 1, 0):
-        from PySide2 import QtWidgets
-    else:
-        from PySide6 import QtWidgets
-    return QtWidgets
 
 
 def _version():
     return ".".join(map(str, substance_painter.application.version_info()))
 
 
-def _check():
-    version = substance_painter.application.version_info()
-    qt = "PySide2" if version < (10, 1, 0) else "PySide6"
-    return {
-        "插件": "已加载",
-        "插件文件": os.path.abspath(__file__),
-        "Painter": _version(),
-        "Painter Python API": "正常",
-        "Qt": qt,
-        "Python": sys.version.split()[0],
-        "系统": platform.system(),
-        "UI Dock API": "正常",
-    }
-
-
 def start_plugin():
     if _widgets:
         return
 
-    QtWidgets = _qt_widgets()
-    widget = QtWidgets.QWidget()
-    widget.setObjectName("SPAI_Assistant_Dock")
+    QtCore, QtWidgets = qt_modules()
+    dialog = QtWidgets.QMessageBox
+    widget = ChatDock("0.2.0")
+    widget.setProperty("spai_version", "0.2.0")
     widget.setWindowTitle("SP AI Assistant")
-
-    layout = QtWidgets.QVBoxLayout(widget)
-    layout.addWidget(QtWidgets.QLabel("<b>SP AI Assistant</b>"))
-    layout.addWidget(QtWidgets.QLabel("0.1.0 · 官方 API 优先"))
-
-    status = QtWidgets.QLabel("插件已加载")
-    layout.addWidget(status)
-
-    button = QtWidgets.QPushButton("运行环境自检")
-    output = QtWidgets.QPlainTextEdit()
-    output.setReadOnly(True)
-
-    def check():
-        try:
-            data = _check()
-            output.setPlainText("\n".join(f"{k}: {v}" for k, v in data.items()))
-            status.setText("✓ 自检完成")
-        except Exception as exc:
-            output.setPlainText(f"自检失败: {type(exc).__name__}: {exc}")
-            status.setText("✗ 自检失败")
-
-    button.clicked.connect(check)
-    layout.addWidget(button)
-    layout.addWidget(output)
-
     substance_painter.ui.add_dock_widget(widget)
     _widgets.append(widget)
 
