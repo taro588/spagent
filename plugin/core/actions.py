@@ -107,11 +107,68 @@ def _normalize_parameter_value(value):
         return {str(k): _normalize_parameter_value(v) for k, v in value.items()}
     return value
 
-def execute_plan(plan: dict) -> dict:
+def validate_plan(plan: dict) -> dict:
+    """Validate an AI-generated plan before any Painter mutation occurs."""
     if not isinstance(plan, dict) or not isinstance(plan.get("actions"), list):
-        raise ActionError("执行计划格式无效。")
-    if len(plan["actions"]) > 20:
+        raise ActionError("执行计划必须是包含 actions 数组的对象。")
+    actions = plan["actions"]
+    if not actions:
+        raise ActionError("执行计划不能为空。")
+    if len(actions) > 20:
         raise ActionError("单次最多执行 20 个动作。")
+
+    required = {
+        "set_opacity": ("opacity",),
+        "set_active_channels": ("channels",),
+        "set_projection_mode": ("mode",),
+        "set_projection_scale": ("scale",),
+        "set_fill_property": ("property", "value"),
+        "set_source_parameters": ("parameters",),
+        "set_effect_parameters": ("parameters",),
+        "add_generator": ("name",),
+        "add_filter": ("name",),
+        "add_smart_mask": ("name",),
+        "add_smart_material": ("name",),
+        "set_fill_material": ("name",),
+        "rename_selected": ("name",),
+        "export_textures": ("path",),
+    }
+    for index, action in enumerate(actions, 1):
+        if not isinstance(action, dict):
+            raise ActionError(f"第 {index} 个动作必须是对象。")
+        kind = action.get("action")
+        if kind not in SUPPORTED_ACTIONS:
+            raise ActionError(f"第 {index} 个动作不允许执行: {kind}")
+        for field in required.get(kind, ()):
+            if field not in action:
+                raise ActionError(f"第 {index} 个 {kind} 缺少参数: {field}")
+
+        if kind in {"set_source_parameters", "set_effect_parameters"}:
+            if not isinstance(action.get("parameters"), dict) or not action["parameters"]:
+                raise ActionError(f"第 {index} 个 {kind} 的 parameters 必须是非空对象。")
+        if kind == "set_projection_scale":
+            scale = action.get("scale")
+            if not isinstance(scale, list) or len(scale) not in (2, 3):
+                raise ActionError(f"第 {index} 个 set_projection_scale 的 scale 必须是 2 或 3 个数字。")
+            if not all(isinstance(v, (int, float)) for v in scale):
+                raise ActionError(f"第 {index} 个 set_projection_scale 的 scale 含非数字值。")
+        if kind == "set_opacity":
+            opacity = action.get("opacity")
+            if not isinstance(opacity, (int, float)) or not 0 <= float(opacity) <= 1:
+                raise ActionError(f"第 {index} 个 set_opacity 的 opacity 必须在 0 到 1 之间。")
+        if kind == "export_textures":
+            path = str(action.get("path") or "").strip()
+            if not path or len(path) > 1000:
+                raise ActionError(f"第 {index} 个 export_textures 的 path 无效。")
+        if kind in {"rename_selected", "set_fill_material", "add_generator", "add_filter",
+                    "add_smart_mask", "add_smart_material"}:
+            if not str(action.get("name") or action.get("resource") or "").strip():
+                raise ActionError(f"第 {index} 个 {kind} 缺少有效资源/名称。")
+    return plan
+
+
+def execute_plan(plan: dict) -> dict:
+    plan = validate_plan(plan)
 
     created = []
     results = []
