@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.ai_client import AIError, PROVIDERS, chat
+from core.actions import execute_plan\nfrom core.ai_client import PROVIDERS, chat\nfrom core.painter_context import prompt_context
 from core.qt_compat import qt_modules
 from core.settings import provider_config, save_provider_config
 
@@ -78,11 +78,11 @@ class ChatDock(QtWidgets.QWidget):
         self.save_button.clicked.connect(self._save)
         self.test_button = QtWidgets.QPushButton("测试连接")
         self.test_button.clicked.connect(self._test_connection)
-        self.clear_button = QtWidgets.QPushButton("清空对话")
+        self.context_button = QtWidgets.QPushButton("读取 Painter 上下文")\n        self.context_button.clicked.connect(self._context)\n        self.plan_button = QtWidgets.QPushButton("生成操作计划")\n        self.plan_button.clicked.connect(self._send)\n        self.execute_button = QtWidgets.QPushButton("执行上一次计划")\n        self.execute_button.clicked.connect(self._execute_last_plan)\n        self.clear_button = QtWidgets.QPushButton("清空对话")
         self.clear_button.clicked.connect(self._clear)
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.test_button)
-        buttons.addWidget(self.clear_button)
+        buttons.addWidget(self.context_button)\n        buttons.addWidget(self.plan_button)\n        buttons.addWidget(self.execute_button)\n        buttons.addWidget(self.clear_button)
         root.addLayout(buttons)
 
         self.status = QtWidgets.QLabel("未配置 AI")
@@ -131,7 +131,7 @@ class ChatDock(QtWidgets.QWidget):
         )
         self.status.setText("✓ 设置已保存（API Key 使用 Windows DPAPI 加密）")
 
-    def _clear(self):
+    def _context(self):\n        try:\n            self._append("Painter 上下文", prompt_context())\n            self.status.setText("✓ 已读取当前 Painter 上下文")\n        except Exception as exc:\n            self.status.setText("✗ 上下文读取失败")\n            self._append("错误", str(exc))\n\n    def _execute_last_plan(self):\n        if not self._last_plan:\n            self.status.setText("✗ 还没有可执行的操作计划")\n            return\n        try:\n            result = execute_plan(self._last_plan)\n            self._append("执行结果", str(result))\n            self.status.setText("✓ Painter 操作执行完成")\n            self._last_plan = None\n        except Exception as exc:\n            self.status.setText("✗ Painter 操作失败")\n            self._append("执行错误", str(exc))\n\n    def _clear(self):
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.history.clear()
         self.status.setText("对话已清空")
@@ -195,7 +195,7 @@ class ChatDock(QtWidgets.QWidget):
             return
         self._save()
         self.input.clear()
-        self._messages.append({"role": "user", "content": text})
+        context = prompt_context()\n        enriched = "当前 Painter 上下文：\\n" + context + "\\n\\n用户请求：\\n" + text\n        self._messages.append({"role": "user", "content": enriched})
         self._append("你", text)
         self._start_request(list(self._messages), self._done)
 
