@@ -42,6 +42,8 @@ def test_installer_detection_logic():
     assert "PainterAppPathsKey" in iss
     assert "Adobe Substance 3D Painter*" in iss
     assert "Adobe Substance 3D Painter.exe" in iss
+    assert "SelectPainterExe" in iss
+    assert "GetOpenFileName" in iss
     assert "DisableDirPage=yes" in iss
     assert "GetModernPainterRoot()" in iss
     assert "GetLegacyPainterRoot()" in iss
@@ -69,3 +71,13 @@ def test_custom_non_c_drive_is_supported_by_detection_design():
     assert 'DefaultDirName={code:GetPainterPluginDir}' in iss
     assert r"GetModernPainterRoot() + '\python\plugins'" in iss
     assert custom_path not in iss
+
+
+def test_plugin_runtime_self_check():
+    source = (ROOT / "plugin" / "sp_ai_assistant.py").read_text(encoding="utf-8")
+    assert "application.version_info()" in source
+    assert "PySide2" in source
+    assert "PySide6" in source
+    assert "os.path.abspath(__file__)" in source
+    assert "substance_painter.ui.add_dock_widget" in source
+    assert "substance_painter.ui.delete_ui_element" in source
