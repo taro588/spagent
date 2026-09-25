@@ -262,6 +262,25 @@ begin
     Result := Pos('"entry_point": "sp_ai_assistant.py"', ManifestText) > 0;
 end;
 
+function InitializeUninstall(): Boolean;
+var
+  PluginDir: String;
+begin
+  PluginDir := ExpandConstant('{app}');
+  Result := True;
+
+  { Safety guard: only allow uninstall cleanup inside a Python plugins folder. }
+  if Pos('\\python\\plugins', LowerCase(PluginDir)) = 0 then
+  begin
+    MsgBox(
+      '检测到异常卸载目录，已阻止自动删除插件文件。' + NL + NL +
+      '目录:' + NL + PluginDir + NL + NL +
+      '这是安全保护，防止误删其他文件。',
+      mbError, MB_OK);
+    Result := False;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
