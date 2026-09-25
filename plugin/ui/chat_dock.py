@@ -182,6 +182,35 @@ class ChatDock(QtWidgets.QWidget):
             self.status.setText("✗ 上下文读取失败")
             self._append("错误", str(exc))
 
+    @staticmethod
+    def _parse_plan_response(text):
+        """Extract a JSON action plan from plain text or a fenced/annotated model response."""
+        candidate = str(text or "").strip()
+        fence = chr(96) * 3
+        if candidate.startswith(fence):
+            lines = candidate.splitlines()
+            if lines and lines[0].lstrip().startswith(fence):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == fence:
+                lines = lines[:-1]
+            candidate = "\n".join(lines).strip()
+        try:
+            value = json.loads(candidate)
+        except Exception:
+            decoder = json.JSONDecoder()
+            value = None
+            for index, char in enumerate(candidate):
+                if char not in "{[":
+                    continue
+                try:
+                    parsed, _end = decoder.raw_decode(candidate[index:])
+                    if isinstance(parsed, dict):
+                        value = parsed
+                        break
+                except json.JSONDecodeError:
+                    continue
+        return value if isinstance(value, dict) and isinstance(value.get("actions"), list) else None
+
     def _plan_actions(self, plan):
         return [
             action for action in plan.get("actions", [])
@@ -286,14 +315,7 @@ class ChatDock(QtWidgets.QWidget):
             self.status.setText("✗ 自动生成修正计划失败")
             return
         self._append("AI 修正计划", text)
-        candidate = text.strip()
-        fence = chr(96) * 3
-        if candidate.startswith(fence):
-            candidate = candidate.replace(fence + "json", "", 1).replace(fence, "").strip()
-        try:
-            plan = json.loads(candidate)
-        except Exception:
-            plan = None
+        plan = self._parse_plan_response(text)
         if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
             self._last_plan = plan
             self._show_plan_preview(plan)
