@@ -16,7 +16,11 @@
     "multi_provider",
     "painter_context",
     "controlled_actions",
-    "layer_operations"
+    "layer_operations",
+    "generator_operations",
+    "filter_operations",
+    "smart_mask_operations",
+    "smart_material_operations"
   ],
   "compatibility": {
     "7.2.0-10.0.x": "PySide2",
