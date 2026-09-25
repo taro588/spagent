@@ -177,11 +177,17 @@ def execute_plan(plan: dict) -> dict:
                     raise ActionError("目标节点不支持投影参数。")
                 params = node.get_projection_parameters()
                 scale = action.get("scale")
-                if not isinstance(scale, list) or len(scale) != 3:
-                    raise ActionError("scale 必须是三个数字组成的数组。")
-                params.projection_3d.scale = [float(v) for v in scale]
+                if not isinstance(scale, list) or len(scale) not in (2, 3):
+                    raise ActionError("scale 必须是两个或三个数字组成的数组。")
+                scale = [float(v) for v in scale]
+                if hasattr(params, "projection_3d") and len(scale) == 3:
+                    params.projection_3d.scale = scale
+                elif hasattr(params, "uv_transformation"):
+                    params.uv_transformation.scale = scale[:2]
+                else:
+                    raise ActionError("当前投影模式不支持 scale 参数。")
                 node.set_projection_parameters(params)
-                results.append({"action": kind, "target": node.get_name(), "scale": params.projection_3d.scale})
+                results.append({"action": kind, "target": node.get_name(), "scale": scale})
 
             elif kind == "set_fill_property":
                 if not created:
