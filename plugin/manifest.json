@@ -20,7 +20,9 @@
     "generator_operations",
     "filter_operations",
     "smart_mask_operations",
-    "smart_material_operations"
+    "smart_material_operations",
+    "selected_layer_operations",
+    "texture_export"
   ],
   "compatibility": {
     "7.2.0-10.0.x": "PySide2",
