@@ -122,6 +122,9 @@ def test_context_and_actions():
     assert "insert_smart_mask" in actions
     assert "insert_smart_material" in actions
     assert "resource.search" in actions
+    assert "gui_name()" in actions
+    assert "identifier()" in actions
+    assert "casefold()" in actions
     assert "get_selected_nodes" in actions
     assert "delete_node" in actions
     assert "export_project_textures" in actions
