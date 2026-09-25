@@ -157,9 +157,9 @@ def validate_plan(plan: dict) -> dict:
             if not isinstance(opacity, (int, float)) or not 0 <= float(opacity) <= 1:
                 raise ActionError(f"第 {index} 个 set_opacity 的 opacity 必须在 0 到 1 之间。")
         if kind == "export_textures":
-            path = str(action.get("path") or "").strip()
+            path = str(action.get("export_path") or "").strip()
             if not path or len(path) > 1000:
-                raise ActionError(f"第 {index} 个 export_textures 的 path 无效。")
+                raise ActionError(f"第 {index} 个 export_textures 的 export_path 无效。")
         if kind in {"rename_selected", "set_fill_material", "add_generator", "add_filter",
                     "add_smart_mask", "add_smart_material"}:
             if not str(action.get("name") or action.get("resource") or "").strip():
@@ -446,7 +446,7 @@ def execute_plan(plan: dict) -> dict:
                 config = {
                     "exportShaderParams": False,
                     "exportPath": export_path,
-                    "defaultExportPreset": preset.url,
+                    "defaultExportPreset": preset.url(),
                     "exportList": [{"rootPath": stack.name()}],
                     "exportParameters": [{
                         "parameters": {
