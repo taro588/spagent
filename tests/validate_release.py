@@ -124,3 +124,10 @@ def test_plugin_entry():
     assert "ChatDock" in source
     assert "substance_painter.ui.add_dock_widget" in source
     assert "substance_painter.ui.delete_ui_element" in source
+
+
+def test_chat_dock_has_correction_loop():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+    assert "_request_correction" in text
+    assert "verify_last_created_parameters" in text
