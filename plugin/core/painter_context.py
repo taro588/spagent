@@ -50,6 +50,10 @@ def snapshot() -> dict:
         result["layers"] = [_node_info(n) for n in sp.layerstack.get_root_layer_nodes(stack)]
         try:
             result["selected_nodes"] = [_node_info(n) for n in sp.layerstack.get_selected_nodes(stack)]
+        try:
+            result["export_presets"] = [p.name for p in sp.export.list_predefined_export_presets()]
+        except Exception:
+            result["export_presets"] = []
         except Exception:
             result["selected_nodes"] = []
     except Exception as exc:
