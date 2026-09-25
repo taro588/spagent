@@ -13,6 +13,10 @@ SUPPORTED_ACTIONS = {
     "add_smart_mask",
     "add_smart_material",
     "set_fill_material",
+    "rename_selected",
+    "delete_selected",
+    "select_last_created",
+    "export_textures",
 }
 
 
@@ -61,6 +65,12 @@ def execute_plan(plan: dict) -> dict:
 
     created = []
     results = []
+
+    def selected_nodes():
+        nodes = sp.layerstack.get_selected_nodes(_active_stack())
+        if not nodes:
+            raise ActionError("当前 Texture Set 没有选中的节点。")
+        return list(nodes)
 
     with sp.layerstack.ScopedModification("SP AI Assistant"):
         for index, action in enumerate(plan["actions"]):
@@ -152,6 +162,58 @@ def execute_plan(plan: dict) -> dict:
                 node = sp.layerstack.insert_smart_material(pos, resource.identifier())
                 created.append(node)
                 results.append({"action": kind, "resource": resource.gui_name(), "name": node.get_name(), "uid": node.uid()})
+
+            elif kind == "rename_selected":
+                nodes = selected_nodes()
+                name = _name(action.get("name"), "")
+                if not name:
+                    raise ActionError("rename_selected 需要 name。")
+                for node in nodes:
+                    node.set_name(name)
+                results.append({"action": kind, "count": len(nodes), "name": name})
+
+            elif kind == "delete_selected":
+                nodes = selected_nodes()
+                if len(nodes) > 10:
+                    raise ActionError("单次最多删除 10 个选中节点。")
+                for node in nodes:
+                    sp.layerstack.delete_node(node)
+                results.append({"action": kind, "count": len(nodes)})
+
+            elif kind == "select_last_created":
+                if not created:
+                    raise ActionError("没有最近创建的节点。")
+                sp.layerstack.set_selected_nodes([created[-1]])
+                results.append({"action": kind, "uid": created[-1].uid()})
+
+            elif kind == "export_textures":
+                export_path = str(action.get("export_path") or "").strip()
+                if not export_path:
+                    raise ActionError("export_textures 需要 export_path。")
+                preset_name = str(action.get("preset") or "PBR Metallic Roughness").strip()
+                preset_id = sp.resource.ResourceID(context="starter_assets", name=preset_name)
+                config = {
+                    "exportShaderParams": False,
+                    "exportPath": export_path,
+                    "defaultExportPreset": preset_id.url(),
+                    "exportList": [{"rootPath": _active_stack().name()}],
+                    "exportParameters": [{
+                        "parameters": {
+                            "dithering": True,
+                            "paddingAlgorithm": "infinite",
+                        }
+                    }],
+                }
+                export_list = sp.export.list_project_textures(config)
+                if not export_list:
+                    raise ActionError("当前配置没有可导出的贴图。")
+                export_result = sp.export.export_project_textures(config)
+                results.append({
+                    "action": kind,
+                    "status": getattr(export_result.status, "name", str(export_result.status)),
+                    "message": export_result.message,
+                    "textures": export_result.textures,
+                })
 
             elif kind == "set_fill_material":
                 if not created:
