@@ -57,6 +57,6 @@ jobs:
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SP-AI-Assistant-Setup-0.1.1
+          name: SP-AI-Assistant-Setup-0.3.0
           path: installer/output/*.exe
           if-no-files-found: error
