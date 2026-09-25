@@ -46,12 +46,32 @@ def _resource(usage: str, name: str):
     name = str(name or "").strip()
     if not name:
         raise ActionError(f"{usage} 资源名称不能为空。")
+
+    # Prefer the starter-assets shelf, then all available resources.
+    # Painter's search is fuzzy by default, so rank exact display/identifier
+    # matches first instead of blindly taking the first result.
     resources = sp.resource.search(f"s:starterassets u:{usage} n:{name}")
     if not resources:
         resources = sp.resource.search(f"u:{usage} n:{name}")
     if not resources:
         raise ActionError(f"找不到 {usage} 资源: {name}")
-    return resources[0]
+
+    wanted = " ".join(name.casefold().split())
+    exact = []
+    for resource in resources:
+        candidates = []
+        try:
+            candidates.append(resource.gui_name())
+        except Exception:
+            pass
+        try:
+            identifier = resource.identifier()
+            candidates.append(getattr(identifier, "name", ""))
+        except Exception:
+            pass
+        if any(" ".join(str(value).casefold().split()) == wanted for value in candidates):
+            exact.append(resource)
+    return exact[0] if exact else resources[0]
 
 
 def _mask_position(node):
