@@ -270,7 +270,7 @@ begin
   Result := True;
 
   { Safety guard: only allow uninstall cleanup inside a Python plugins folder. }
-  if Pos('\\python\\plugins', LowerCase(PluginDir)) = 0 then
+  if Pos('\python\plugins', LowerCase(PluginDir)) = 0 then
   begin
     MsgBox(
       '检测到异常卸载目录，已阻止自动删除插件文件。' + NL + NL +
