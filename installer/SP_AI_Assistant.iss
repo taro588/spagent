@@ -36,6 +36,7 @@ const
 var
   DetectionText: String;
   PainterDetected: Boolean;
+  ManualPainterPath: String;
 
 function GetModernPainterRoot(): String;
 begin
@@ -201,6 +202,7 @@ var
 begin
   DetectionText := '';
   PainterDetected := False;
+  ManualPainterPath := '';
 
   ScanAdobeRegistry();
 
@@ -221,6 +223,43 @@ begin
       GetLegacyPainterRoot() + '\python\plugins' + NL;
 end;
 
+function SelectPainterExe(): Boolean;
+var
+  FileName: String;
+begin
+  FileName := '';
+  Result := GetOpenFileName(
+    '请选择 Substance 3D Painter 主程序',
+    FileName,
+    '',
+    'Substance 3D Painter|Adobe Substance 3D Painter.exe|可执行文件|*.exe',
+    '');
+  if not Result then
+    exit;
+
+  if CompareText(ExtractFileName(FileName), 'Adobe Substance 3D Painter.exe') <> 0 then
+  begin
+    MsgBox(
+      '选择的文件不是 Adobe Substance 3D Painter.exe。' + NL + NL +
+      '请重新选择 Painter 主程序。',
+      mbError, MB_OK);
+    Result := False;
+    exit;
+  end;
+
+  if not FileExists(FileName) then
+  begin
+    Result := False;
+    exit;
+  end;
+
+  ManualPainterPath := FileName;
+  PainterDetected := True;
+  DetectionText := DetectionText +
+    '✓ Substance 3D Painter（手动指定）' + NL +
+    '  程序: ' + FileName + NL;
+end;
+
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
@@ -238,14 +277,28 @@ begin
         '不会修改 Painter 核心程序。',
         mbInformation, MB_OK)
     else
+    begin
       MsgBox(
-        '未检测到 Substance 3D Painter。' + NL + NL +
-        '安装器已检查 Windows 卸载注册表、App Paths、64/32 位注册表视图以及常见 Adobe 安装目录。' + NL +
-        '如果你的 Painter 是完全未注册的自定义/便携安装，安装器不会扫描整块磁盘，以避免慢扫描和误报。' + NL +
-        '安装器仍会继续安装到官方用户插件目录:' + NL +
-        GetModernPainterRoot() + '\python\plugins' + NL + NL +
-        '不会修改 Painter 核心程序。',
+        '未通过系统注册信息自动检测到 Substance 3D Painter。' + NL + NL +
+        '这通常发生在自定义/便携安装或安装信息未注册的情况下。' + NL +
+        '现在可以直接选择 Painter 的 Adobe Substance 3D Painter.exe，' + NL +
+        '无需扫描整块磁盘，也不会因为安装在 D:\、E:\ 等盘符而漏检。',
         mbInformation, MB_OK);
+
+      if not SelectPainterExe() then
+      begin
+        MsgBox(
+          '未指定 Painter 主程序。' + NL + NL +
+          '安装器仍可继续安装到官方用户 Python 插件目录，但建议指定 Painter 以完成安装前检测。',
+          mbInformation, MB_OK);
+      end
+      else
+        MsgBox(
+          '已确认 Painter:' + NL + NL +
+          DetectionText + NL +
+          '插件将安装到官方用户 Python 插件目录，不会修改 Painter 程序目录。',
+          mbInformation, MB_OK);
+    end;
   end;
 end;
 
@@ -285,7 +338,8 @@ begin
         'SP AI Assistant 安装成功。' + NL + NL +
         '安装位置:' + NL + ExpandConstant('{app}') + NL + NL +
         '已验证插件入口文件和 manifest。' + NL + NL +
-        '请重新启动 Substance 3D Painter，然后在 Python 菜单中启用插件。',
+        '请重新启动 Substance 3D Painter。' + NL +
+        '启动后打开 Python 菜单，点击 SP AI Assistant 以启用插件。',
         mbInformation, MB_OK)
     else
       MsgBox(
