@@ -4,7 +4,7 @@
   "version": "0.3.0",
   "api": "python",
   "min_painter_version": "7.2.0",
-  "max_tested_painter_version": null,
+  "max_tested_painter_version": "11.0.x",
   "entry_point": "sp_ai_assistant.py",
   "capabilities": [
     "dock_ui",
