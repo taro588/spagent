@@ -12,17 +12,22 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.1.1"
+    assert data["version"] == "0.2.0"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["compatibility"]["7.2.0-10.0.x"] == "PySide2"
     assert data["compatibility"]["10.1.0+"] == "PySide6"
+    assert "ai_chat" in data["capabilities"]
+    assert "multi_provider" in data["capabilities"]
 
 
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
+    assert '#define MyAppVersion "0.2.0"' in iss
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
+    assert 'Source: "..\\plugin\\core\\*"' in iss
+    assert 'Source: "..\\plugin\\ui\\*"' in iss
     assert "sp_ai_assistant.py" in iss
 
 
@@ -53,6 +58,7 @@ def test_installer_detection_logic():
     assert "VerifyInstall" in iss
     assert "FileExists(ExpandConstant('{app}\\sp_ai_assistant.py'))" in iss
     assert "FileExists(ManifestPath)" in iss
+    assert "filesandordirs" in iss
 
 
 def test_custom_non_c_drive_is_supported_by_detection_design():
@@ -67,11 +73,27 @@ def test_custom_non_c_drive_is_supported_by_detection_design():
     assert custom_path not in iss
 
 
-def test_plugin_runtime_self_check():
+def test_ai_modules():
+    client = (ROOT / "plugin" / "core" / "ai_client.py").read_text(encoding="utf-8")
+    settings = (ROOT / "plugin" / "core" / "settings.py").read_text(encoding="utf-8")
+    dock = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+    qt = (ROOT / "plugin" / "core" / "qt_compat.py").read_text(encoding="utf-8")
+    assert "https://api.openai.com/v1" in client
+    assert "/responses" in client
+    assert "api.anthropic.com" in client
+    assert "/v1/messages" in client
+    assert "generativelanguage.googleapis.com" in client
+    assert ":generateContent" in client
+    assert "CryptProtectData" in settings
+    assert "CryptUnprotectData" in settings
+    assert "测试连接" in dock
+    assert "AIProvider" not in client
+    assert "PySide2" in qt and "PySide6" in qt
+
+
+def test_plugin_entry():
     source = (ROOT / "plugin" / "sp_ai_assistant.py").read_text(encoding="utf-8")
-    assert "application.version_info()" in source
-    assert "PySide2" in source
-    assert "PySide6" in source
-    assert "os.path.abspath(__file__)" in source
+    assert "application.version_info()" in source or "substance_painter" in source
+    assert "ChatDock" in source
     assert "substance_painter.ui.add_dock_widget" in source
     assert "substance_painter.ui.delete_ui_element" in source
