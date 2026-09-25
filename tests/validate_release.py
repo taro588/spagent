@@ -45,11 +45,12 @@ def test_installer_detection_logic():
     assert "DisableDirPage=yes" in iss
     assert "GetModernPainterRoot()" in iss
     assert "GetLegacyPainterRoot()" in iss
-    assert "LoadStringFromFile" in iss
-    assert '"entry_point": "sp_ai_assistant.py"' in iss
     assert "InitializeUninstall" in iss
     assert "LowerCase(PluginDir)" in iss
     assert "\\python\\plugins" in iss
+    assert "VerifyInstall" in iss
+    assert "FileExists(ExpandConstant('{app}\\sp_ai_assistant.py'))" in iss
+    assert "FileExists(ManifestPath)" in iss
 
 
 def test_custom_non_c_drive_is_supported_by_detection_design():
