@@ -240,9 +240,26 @@ begin
 end;
 
 function VerifyInstall(): Boolean;
+var
+  ManifestPath, ManifestText: String;
 begin
+  ManifestPath := ExpandConstant('{app}\manifest.json');
   Result := FileExists(ExpandConstant('{app}\sp_ai_assistant.py')) and
-           FileExists(ExpandConstant('{app}\manifest.json'));
+           FileExists(ManifestPath);
+
+  if not Result then
+    exit;
+
+  if not LoadStringFromFile(ManifestPath, ManifestText) then
+  begin
+    Result := False;
+    exit;
+  end;
+
+  { Verify the installed manifest is the release we are installing. }
+  Result := Pos('"version": "' + '{#MyAppVersion}' + '"', ManifestText) > 0;
+  if Result then
+    Result := Pos('"entry_point": "sp_ai_assistant.py"', ManifestText) > 0;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -253,6 +270,7 @@ begin
       MsgBox(
         'SP AI Assistant 安装成功。' + NL + NL +
         '安装位置:' + NL + ExpandConstant('{app}') + NL + NL +
+        '已验证插件入口文件和 manifest 版本。' + NL + NL +
         '请重新启动 Substance 3D Painter，然后在 Python 菜单中启用插件。',
         mbInformation, MB_OK)
     else
