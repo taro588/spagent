@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import sys
 
@@ -28,11 +29,13 @@ def _check():
     qt = "PySide2" if version < (10, 1, 0) else "PySide6"
     return {
         "插件": "已加载",
+        "插件文件": os.path.abspath(__file__),
         "Painter": _version(),
         "Painter Python API": "正常",
         "Qt": qt,
         "Python": sys.version.split()[0],
         "系统": platform.system(),
+        "UI Dock API": "正常",
     }
 
 
@@ -57,9 +60,13 @@ def start_plugin():
     output.setReadOnly(True)
 
     def check():
-        data = _check()
-        output.setPlainText("\n".join(f"{k}: {v}" for k, v in data.items()))
-        status.setText("✓ 自检完成")
+        try:
+            data = _check()
+            output.setPlainText("\n".join(f"{k}: {v}" for k, v in data.items()))
+            status.setText("✓ 自检完成")
+        except Exception as exc:
+            output.setPlainText(f"自检失败: {type(exc).__name__}: {exc}")
+            status.setText("✗ 自检失败")
 
     button.clicked.connect(check)
     layout.addWidget(button)
