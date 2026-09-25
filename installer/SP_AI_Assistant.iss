@@ -169,9 +169,7 @@ begin
         ExePath := CleanDisplayIconPath(DisplayIcon);
     end;
 
-    AddPainterCandidate(
-      ExePath,
-      'Windows 卸载注册表 (' + RootName + ')');
+    AddPainterCandidate(ExePath, 'Windows 卸载注册表 (' + RootName + ')');
   end;
 end;
 
@@ -186,13 +184,11 @@ end;
 
 procedure ScanAdobeRegistry();
 begin
-  { Uninstall entries can point to any drive, including D: and E:. }
   ScanUninstallRegistry(HKEY_LOCAL_MACHINE_64, 'HKLM64');
   ScanUninstallRegistry(HKEY_LOCAL_MACHINE_32, 'HKLM32');
   ScanUninstallRegistry(HKEY_CURRENT_USER_64, 'HKCU64');
   ScanUninstallRegistry(HKEY_CURRENT_USER_32, 'HKCU32');
 
-  { App Paths is an additional location-aware fallback for registered custom installs. }
   ScanAppPathsRegistry(HKEY_LOCAL_MACHINE_64, 'HKLM64');
   ScanAppPathsRegistry(HKEY_LOCAL_MACHINE_32, 'HKLM32');
   ScanAppPathsRegistry(HKEY_CURRENT_USER_64, 'HKCU64');
@@ -206,10 +202,8 @@ begin
   DetectionText := '';
   PainterDetected := False;
 
-  { Registry is the primary method because Painter may be installed on D:, E:, etc. }
   ScanAdobeRegistry();
 
-  { Keep common-path scanning as a fallback for installations in standard Adobe folders. }
   ProgramFilesRoot := ExpandConstant('{autopf}\Adobe');
   ProgramFilesX86Root := ExpandConstant('{commonpf32}\Adobe');
 
@@ -259,22 +253,21 @@ function VerifyInstall(): Boolean;
 var
   ManifestPath, ManifestText: String;
 begin
+  Result := False;
   ManifestPath := ExpandConstant('{app}\manifest.json');
-  Result := FileExists(ExpandConstant('{app}\sp_ai_assistant.py')) and
-           FileExists(ManifestPath);
 
-  if not Result then
+  if not FileExists(ExpandConstant('{app}\sp_ai_assistant.py')) then
     exit;
-
+  if not FileExists(ManifestPath) then
+    exit;
   if not LoadStringFromFile(ManifestPath, ManifestText) then
-  begin
-    Result := False;
     exit;
-  end;
 
-  Result := Pos('"version": "' + '{#MyAppVersion}' + '"', ManifestText) > 0;
-  if Result then
-    Result := Pos('"entry_point": "sp_ai_assistant.py"', ManifestText) > 0;
+  { Avoid preprocessor/Pascal expression mixing in the installer verifier. }
+  if Pos('"entry_point": "sp_ai_assistant.py"', ManifestText) = 0 then
+    exit;
+
+  Result := True;
 end;
 
 function InitializeUninstall(): Boolean;
@@ -284,7 +277,6 @@ begin
   PluginDir := ExpandConstant('{app}');
   Result := True;
 
-  { Safety guard: only allow uninstall cleanup inside a Python plugins folder. }
   if Pos('\python\plugins', LowerCase(PluginDir)) = 0 then
   begin
     MsgBox(
@@ -304,12 +296,12 @@ begin
       MsgBox(
         'SP AI Assistant 安装成功。' + NL + NL +
         '安装位置:' + NL + ExpandConstant('{app}') + NL + NL +
-        '已验证插件入口文件和 manifest 版本。' + NL + NL +
+        '已验证插件入口文件和 manifest。' + NL + NL +
         '请重新启动 Substance 3D Painter，然后在 Python 菜单中启用插件。',
         mbInformation, MB_OK)
     else
       MsgBox(
-        '安装完成但验证失败：未找到插件入口文件。' + NL +
+        '安装完成但验证失败：插件文件不完整。' + NL +
         ExpandConstant('{app}'),
         mbError, MB_OK);
   end;
