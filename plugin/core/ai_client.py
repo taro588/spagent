@@ -14,7 +14,7 @@ PROVIDERS = {
     "Anthropic": {
         "id": "anthropic",
         "base_url": "https://api.anthropic.com",
-        "models": ["claude-opus-5.5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
+        "models": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
     },
     "Google Gemini": {
         "id": "gemini",
@@ -50,10 +50,12 @@ def _post(url: str, payload: dict, headers: dict, timeout: int = 90) -> dict:
         raise AIError("模型返回了无法解析的 JSON") from exc
 
 
-def _openai(messages, model, api_key, base_url):
-    url = base_url.rstrip("/") + "/responses"
-    payload = {"model": model, "input": messages}
-    data = _post(url, payload, {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"})
+def _openai_responses(messages, model, api_key, base_url):
+    data = _post(
+        base_url.rstrip("/") + "/responses",
+        {"model": model, "input": messages},
+        {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+    )
     parts = []
     for item in data.get("output", []):
         for content in item.get("content", []) or []:
@@ -65,12 +67,25 @@ def _openai(messages, model, api_key, base_url):
     return text
 
 
+def _openai_compatible(messages, model, api_key, base_url):
+    payload = {"model": model, "messages": messages}
+    data = _post(
+        base_url.rstrip("/") + "/chat/completions",
+        payload,
+        {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+    )
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise AIError("兼容 OpenAI 的服务返回成功，但没有找到文本输出") from exc
+
+
 def _anthropic(messages, model, api_key, base_url):
-    system = ""
+    system_parts = []
     user_messages = []
     for message in messages:
         if message.get("role") == "system":
-            system += (message.get("content") or "") + "\n"
+            system_parts.append(message.get("content") or "")
         else:
             user_messages.append(message)
     payload = {
@@ -78,8 +93,8 @@ def _anthropic(messages, model, api_key, base_url):
         "max_tokens": 4096,
         "messages": user_messages,
     }
-    if system.strip():
-        payload["system"] = system.strip()
+    if system_parts:
+        payload["system"] = "\n".join(system_parts).strip()
     data = _post(
         base_url.rstrip("/") + "/v1/messages",
         payload,
@@ -90,7 +105,9 @@ def _anthropic(messages, model, api_key, base_url):
         },
     )
     text = "\n".join(
-        block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
+        block.get("text", "")
+        for block in data.get("content", [])
+        if block.get("type") == "text"
     ).strip()
     if not text:
         raise AIError("Anthropic 返回成功，但没有找到文本输出")
@@ -118,10 +135,11 @@ def _gemini(messages, model, api_key, base_url):
         payload,
         {"x-goog-api-key": api_key, "Content-Type": "application/json"},
     )
-    try:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise AIError("Gemini 返回成功，但没有找到文本输出") from exc
+    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+    text = "\n".join(p.get("text", "") for p in parts if p.get("text")).strip()
+    if not text:
+        raise AIError("Gemini 返回成功，但没有找到文本输出")
+    return text
 
 
 def chat(provider_name: str, messages: list[dict], model: str, api_key: str, base_url: str = "") -> str:
@@ -130,10 +148,14 @@ def chat(provider_name: str, messages: list[dict], model: str, api_key: str, bas
     info = PROVIDERS.get(provider_name)
     if not info:
         raise AIError("未知 AI 提供商")
+    if not model:
+        raise AIError("尚未设置模型")
     base = (base_url or info["base_url"]).strip()
     provider_id = info["id"]
-    if provider_id in ("openai", "openai_compatible"):
-        return _openai(messages, model, api_key, base)
+    if provider_id == "openai":
+        return _openai_responses(messages, model, api_key, base)
+    if provider_id == "openai_compatible":
+        return _openai_compatible(messages, model, api_key, base)
     if provider_id == "anthropic":
         return _anthropic(messages, model, api_key, base)
     if provider_id == "gemini":
