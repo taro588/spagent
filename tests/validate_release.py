@@ -140,3 +140,18 @@ def test_chat_dock_has_plan_preview_and_confirmation():
     assert "QMessageBox.warning" in text
     assert "delete_selected" in text
     assert "export_textures" in text
+
+
+def test_chat_dock_has_execution_modes_and_high_impact_guard():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+    assert 'self.execution_mode.addItem("仅生成计划", "plan")' in text
+    assert 'self.execution_mode.addItem("每次确认", "confirm")' in text
+    assert 'self.execution_mode.addItem("低风险自动执行", "auto")' in text
+    assert "_auto_execute_if_safe" in text
+    assert "HIGH_IMPACT_ACTIONS" in text
+    assert "delete_selected" in text
+    assert "export_textures" in text
+    assert "set_source_parameters" in text
+    assert "set_effect_parameters" in text
+    assert "_confirm_execution" in text
