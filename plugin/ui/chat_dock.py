@@ -91,6 +91,13 @@ class ChatDock(QtWidgets.QWidget):
             buttons.addWidget(button)
         root.addLayout(buttons)
 
+        self.plan_preview = QtWidgets.QPlainTextEdit()
+        self.plan_preview.setReadOnly(True)
+        self.plan_preview.setPlaceholderText("AI 生成操作计划后，这里会显示执行预览。")
+        self.plan_preview.setMaximumHeight(180)
+        root.addWidget(QtWidgets.QLabel("<b>操作预览</b>"))
+        root.addWidget(self.plan_preview)
+
         self.status = QtWidgets.QLabel("未配置 AI")
         root.addWidget(self.status)
 
@@ -150,6 +157,12 @@ class ChatDock(QtWidgets.QWidget):
             self.status.setText("✗ 还没有可执行的操作计划")
             return
         plan = self._last_plan
+        dangerous = {"delete_selected", "export_textures"}
+        if any(action.get("action") in dangerous for action in plan.get("actions", [])):
+            answer = QtWidgets.QMessageBox.warning(self, "高影响操作确认", "该计划包含删除或贴图导出操作。\n确认继续执行吗？", QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+            if answer != QtWidgets.QMessageBox.Yes:
+                self.status.setText("已取消执行")
+                return
         try:
             result = execute_plan(plan)
             self._last_execution = result
@@ -214,6 +227,8 @@ class ChatDock(QtWidgets.QWidget):
     def _clear(self):
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._last_plan = None
+        self._last_execution = None
+        self.plan_preview.clear()
         self.history.clear()
         self.status.setText("对话已清空")
 
@@ -295,7 +310,8 @@ class ChatDock(QtWidgets.QWidget):
                 plan = None
             if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
                 self._last_plan = plan
-                self.status.setText("✓ 已生成操作计划，点击“执行上一次计划”")
+                self._show_plan_preview(plan)
+                self.status.setText("✓ 已生成操作计划，请检查“操作预览”后执行")
             else:
                 self.status.setText("✓ 已收到模型回复")
         else:
@@ -303,6 +319,16 @@ class ChatDock(QtWidgets.QWidget):
                 self._messages.pop()
             self._append("错误", text)
             self.status.setText("✗ 请求失败")
+
+    def _show_plan_preview(self, plan):
+        lines = []
+        for index, action in enumerate(plan.get("actions", []), 1):
+            kind = action.get("action", "unknown")
+            detail = {k: v for k, v in action.items() if k != "action"}
+            lines.append(f"{index}. {kind}")
+            if detail:
+                lines.append("   " + json.dumps(detail, ensure_ascii=False, default=str))
+        self.plan_preview.setPlainText("\n".join(lines) if lines else "（空操作计划）")
 
     def _thread_finished(self):
         self._thread = None
