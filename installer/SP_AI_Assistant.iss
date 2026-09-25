@@ -30,6 +30,7 @@ Type: files; Name: "{app}\manifest.json"
 [Code]
 const
   PainterUninstallKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall';
+  PainterAppPathsKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Adobe Substance 3D Painter.exe';
   NL = #13#10;
 
 var
@@ -63,7 +64,7 @@ end;
 
 function CandidateAlreadyListed(const ExePath: String): Boolean;
 begin
-  Result := Pos(ExePath, DetectionText) > 0;
+  Result := Pos(LowerCase(ExePath), LowerCase(DetectionText)) > 0;
 end;
 
 procedure AddPainterCandidate(const ExePath: String; const Source: String);
@@ -174,13 +175,28 @@ begin
   end;
 end;
 
+procedure ScanAppPathsRegistry(const RootKey: Integer; const RootName: String);
+var
+  ExePath: String;
+begin
+  ExePath := '';
+  if RegQueryStringValue(RootKey, PainterAppPathsKey, '', ExePath) then
+    AddPainterCandidate(Trim(ExePath), 'Windows App Paths (' + RootName + ')');
+end;
+
 procedure ScanAdobeRegistry();
 begin
-  { Check both 64-bit and 32-bit registry views, plus per-user uninstall data. }
+  { Uninstall entries can point to any drive, including D: and E:. }
   ScanUninstallRegistry(HKEY_LOCAL_MACHINE_64, 'HKLM64');
   ScanUninstallRegistry(HKEY_LOCAL_MACHINE_32, 'HKLM32');
   ScanUninstallRegistry(HKEY_CURRENT_USER_64, 'HKCU64');
   ScanUninstallRegistry(HKEY_CURRENT_USER_32, 'HKCU32');
+
+  { App Paths is an additional location-aware fallback for registered custom installs. }
+  ScanAppPathsRegistry(HKEY_LOCAL_MACHINE_64, 'HKLM64');
+  ScanAppPathsRegistry(HKEY_LOCAL_MACHINE_32, 'HKLM32');
+  ScanAppPathsRegistry(HKEY_CURRENT_USER_64, 'HKCU64');
+  ScanAppPathsRegistry(HKEY_CURRENT_USER_32, 'HKCU32');
 end;
 
 procedure DetectPainters();
@@ -193,7 +209,7 @@ begin
   { Registry is the primary method because Painter may be installed on D:, E:, etc. }
   ScanAdobeRegistry();
 
-  { Keep common-path scanning as a fallback for portable/custom installations. }
+  { Keep common-path scanning as a fallback for installations in standard Adobe folders. }
   ProgramFilesRoot := ExpandConstant('{autopf}\Adobe');
   ProgramFilesX86Root := ExpandConstant('{commonpf32}\Adobe');
 
@@ -224,19 +240,19 @@ begin
         '检测到 Substance 3D Painter:' + NL + NL +
         DetectionText + NL +
         '插件将自动安装到 Painter 官方用户 Python 插件目录。' + NL +
-        '安装目录不会让用户误选到 Painter 程序目录。' + NL +
+        '即使 Painter 安装在 D:\、E:\ 等非 C 盘，也不会把插件安装到 Painter 程序目录。' + NL +
         '不会修改 Painter 核心程序。',
         mbInformation, MB_OK)
     else
       MsgBox(
         '未检测到 Substance 3D Painter。' + NL + NL +
-        '安装器已检查 Windows 卸载注册表、64/32 位注册表视图以及常见 Adobe 安装目录。' + NL +
-        '如果你的 Painter 使用非常规安装方式且未写入这些位置，安装器仍会继续安装到官方用户插件目录:' + NL +
+        '安装器已检查 Windows 卸载注册表、App Paths、64/32 位注册表视图以及常见 Adobe 安装目录。' + NL +
+        '如果你的 Painter 是完全未注册的自定义/便携安装，安装器不会扫描整块磁盘，以避免慢扫描和误报。' + NL +
+        '安装器仍会继续安装到官方用户插件目录:' + NL +
         GetModernPainterRoot() + '\python\plugins' + NL + NL +
         '不会修改 Painter 核心程序。',
         mbInformation, MB_OK);
   end;
-
 end;
 
 function VerifyInstall(): Boolean;
@@ -256,7 +272,6 @@ begin
     exit;
   end;
 
-  { Verify the installed manifest is the release we are installing. }
   Result := Pos('"version": "' + '{#MyAppVersion}' + '"', ManifestText) > 0;
   if Result then
     Result := Pos('"entry_point": "sp_ai_assistant.py"', ManifestText) > 0;
