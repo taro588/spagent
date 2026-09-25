@@ -28,8 +28,8 @@ Source: "..\plugin\ui\*"; DestDir: "{app}\ui"; Flags: ignoreversion recursesubdi
 [UninstallDelete]
 Type: files; Name: "{app}\sp_ai_assistant.py"
 Type: files; Name: "{app}\manifest.json"
-Type: filesandordirs; Name: "{app}\core"
-Type: filesandordirs; Name: "{app}\ui"
+Type: files; Name: "{app}\core\*"
+Type: files; Name: "{app}\ui\*"
 
 [Code]
 const
