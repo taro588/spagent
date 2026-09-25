@@ -50,18 +50,40 @@ def _post(url: str, payload: dict, headers: dict, timeout: int = 90) -> dict:
         raise AIError("模型返回了无法解析的 JSON") from exc
 
 
+def _extract_openai_compatible_content(data):
+    choices = data.get("choices") or []
+    if not choices:
+        raise AIError("服务返回成功，但没有 choices 文本输出")
+    message = choices[0].get("message") or {}
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") in {"text", "output_text"}:
+                if item.get("text"):
+                    parts.append(str(item["text"]))
+        return "\n".join(parts)
+    return ""
+
+
+def _extract_openai_responses_text(data):
+    parts = []
+    for item in data.get("output", []) or []:
+        for content in item.get("content", []) or []:
+            if content.get("type") == "output_text" and content.get("text"):
+                parts.append(str(content["text"]))
+    return "\n".join(parts).strip()
+
+
 def _openai_responses(messages, model, api_key, base_url):
     data = _post(
         base_url.rstrip("/") + "/responses",
         {"model": model, "input": messages},
         {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
     )
-    parts = []
-    for item in data.get("output", []):
-        for content in item.get("content", []) or []:
-            if content.get("type") == "output_text" and content.get("text"):
-                parts.append(content["text"])
-    text = "\n".join(parts).strip()
+    text = _extract_openai_responses_text(data)
     if not text:
         raise AIError("OpenAI 返回成功，但没有找到文本输出")
     return text
@@ -74,10 +96,10 @@ def _openai_compatible(messages, model, api_key, base_url):
         payload,
         {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
     )
-    try:
-        return data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise AIError("兼容 OpenAI 的服务返回成功，但没有找到文本输出") from exc
+    text = _extract_openai_compatible_content(data)
+    if not text:
+        raise AIError("兼容 OpenAI 的服务返回成功，但没有找到文本输出")
+    return text
 
 
 def _anthropic(messages, model, api_key, base_url):
@@ -135,8 +157,14 @@ def _gemini(messages, model, api_key, base_url):
         payload,
         {"x-goog-api-key": api_key, "Content-Type": "application/json"},
     )
-    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-    text = "\n".join(p.get("text", "") for p in parts if p.get("text")).strip()
+    candidates = data.get("candidates") or []
+    if not candidates:
+        raise AIError("Gemini 返回成功，但没有候选输出")
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    text = "\n".join(
+        str(p.get("text", "")) for p in parts
+        if isinstance(p, dict) and p.get("text")
+    ).strip()
     if not text:
         raise AIError("Gemini 返回成功，但没有找到文本输出")
     return text
