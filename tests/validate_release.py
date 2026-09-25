@@ -129,6 +129,7 @@ def test_context_and_actions():
     assert "rename_selected" in actions
     assert "delete_selected" in actions
     assert "export_textures" in actions
+    assert '"export_textures": ("export_path",)' in actions
     assert "set_fill_property" in actions
     assert "validate_plan" in actions
     assert "_material_source" in actions
