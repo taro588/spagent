@@ -45,6 +45,5 @@ def test_installer_detection_logic():
     assert "LoadStringFromFile" in iss
     assert '"entry_point": "sp_ai_assistant.py"' in iss
     assert "InitializeUninstall" in iss
-    assert "InitializeUninstall" in iss
     assert "LowerCase(PluginDir)" in iss
     assert "\\python\\plugins" in iss
