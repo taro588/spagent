@@ -3,6 +3,47 @@ from __future__ import annotations
 import substance_painter as sp
 
 
+def _safe_value(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_safe_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _safe_value(v) for k, v in value.items()}
+    for attrs in (("r", "g", "b", "a"), ("x", "y", "z")):
+        if all(hasattr(value, a) for a in attrs):
+            return {a: float(getattr(value, a)) for a in attrs}
+    return str(value)
+
+
+def _source_info(node):
+    if not hasattr(node, "get_material_source"):
+        return {}
+    try:
+        source = node.get_material_source()
+        params = source.get_parameters()
+        return {
+            "source_type": type(source).__name__,
+            "parameters": {str(k): _safe_value(v) for k, v in params.items()},
+        }
+    except Exception:
+        return {}
+
+
+def _effect_info(node):
+    if not hasattr(node, "get_parameters"):
+        return {}
+    try:
+        params = node.get_parameters()
+        if hasattr(params, "__dict__"):
+            values = {k: _safe_value(v) for k, v in vars(params).items()}
+        else:
+            values = _safe_value(params)
+        return {"parameters": values}
+    except Exception:
+        return {}
+
+
 def _node_info(node):
     try:
         node_type = node.get_type()
@@ -16,6 +57,9 @@ def _node_info(node):
         name = ""
 
     item = {"uid": node.uid(), "name": name, "type": node_type}
+    item.update(_source_info(node))
+    if not item.get("parameters"):
+        item.update(_effect_info(node))
     if hasattr(node, "sub_layers"):
         try:
             item["children"] = [_node_info(child) for child in node.sub_layers()]
