@@ -24,8 +24,8 @@ def start_plugin():
 
     QtCore, QtWidgets = qt_modules()
     dialog = QtWidgets.QMessageBox
-    widget = ChatDock("0.2.0")
-    widget.setProperty("spai_version", "0.2.0")
+    widget = ChatDock("0.3.0")
+    widget.setProperty("spai_version", "0.3.0")
     widget.setWindowTitle("SP AI Assistant")
     substance_painter.ui.add_dock_widget(widget)
     _widgets.append(widget)
