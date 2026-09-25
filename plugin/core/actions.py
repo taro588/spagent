@@ -8,6 +8,9 @@ SUPPORTED_ACTIONS = {
     "create_group",
     "add_mask",
     "set_opacity",
+    "set_active_channels",
+    "set_projection_mode",
+    "set_projection_scale",
     "add_generator",
     "add_filter",
     "add_smart_mask",
@@ -114,6 +117,48 @@ def execute_plan(plan: dict) -> dict:
                 if not node.has_mask():
                     node.add_mask(bg)
                 results.append({"action": kind, "target": node.get_name(), "background": background})
+
+            elif kind == "set_active_channels":
+                if not created:
+                    raise ActionError("set_active_channels 没有可作用的最近创建节点。")
+                node = created[-1]
+                if not hasattr(node, "active_channels"):
+                    raise ActionError("目标节点不支持 active_channels。")
+                names = action.get("channels") or ["BaseColor", "Roughness", "Metallic", "Normal"]
+                channels = set()
+                for name in names:
+                    try:
+                        channels.add(getattr(sp.layerstack.ChannelType, str(name)))
+                    except AttributeError:
+                        raise ActionError(f"未知通道: {name}")
+                node.active_channels = channels
+                results.append({"action": kind, "target": node.get_name(), "channels": [c.name for c in channels]})
+
+            elif kind == "set_projection_mode":
+                if not created:
+                    raise ActionError("set_projection_mode 没有可作用的最近创建节点。")
+                node = created[-1]
+                mode = str(action.get("mode", "UV")).strip()
+                try:
+                    projection = getattr(sp.layerstack.ProjectionMode, mode)
+                except AttributeError:
+                    raise ActionError(f"未知投影模式: {mode}")
+                node.set_projection_mode(projection)
+                results.append({"action": kind, "target": node.get_name(), "mode": mode})
+
+            elif kind == "set_projection_scale":
+                if not created:
+                    raise ActionError("set_projection_scale 没有可作用的最近创建节点。")
+                node = created[-1]
+                if not hasattr(node, "get_projection_parameters"):
+                    raise ActionError("目标节点不支持投影参数。")
+                params = node.get_projection_parameters()
+                scale = action.get("scale")
+                if not isinstance(scale, list) or len(scale) != 3:
+                    raise ActionError("scale 必须是三个数字组成的数组。")
+                params.projection_3d.scale = [float(v) for v in scale]
+                node.set_projection_parameters(params)
+                results.append({"action": kind, "target": node.get_name(), "scale": params.projection_3d.scale})
 
             elif kind == "set_opacity":
                 if not created:
