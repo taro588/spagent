@@ -287,7 +287,8 @@ def _expand_workflow_actions(plan: dict) -> dict:
             if values:
                 expanded.append({"action": "verify_last_created_parameters", "parameters": values})
         elif kind == "auto_material_workflow":
-            if action.get("bake", False):
+            # Baking is opt-in. Creating a material must never implicitly bake.
+            if bool(action.get("bake", False)):
                 expanded.append({"action": "bake_start"})
             base = dict(action)
             base["action"] = "apply_base_material"
@@ -302,7 +303,7 @@ def _expand_workflow_actions(plan: dict) -> dict:
             expanded.append({"action": "texture_stack_select", "stack": action.get("stack", "active")})
             if action.get("resolution"):
                 expanded.append({"action": "texture_set_resolution", "resolution": action["resolution"]})
-            if action.get("bake", False):
+            if bool(action.get("bake", False)):
                 expanded.append({"action": "bake_start"})
         elif kind == "ensure_material_layer":
             expanded.append({"action": "create_fill_layer", "name": _name(action.get("name"), "AI Material Layer")})
