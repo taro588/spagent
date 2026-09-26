@@ -118,7 +118,7 @@ def test_ai_modules():
     assert "_extract_openai_compatible_content" in client
     assert 'if api_key:' in client
     assert 'headers["Authorization"] = "Bearer " + api_key' in client
-    assert 'provider_id in {"openai_compatible", "deepseek", "kimi", "qwen", "minimax"}' in client
+    assert 'provider_id in {"openai_compatible", "deepseek", "kimi", "qwen", "glm", "minimax"}' in client
     assert ":generateContent" in client
     assert "CryptProtectData" in settings
     assert "CryptUnprotectData" in settings
