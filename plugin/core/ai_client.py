@@ -304,7 +304,7 @@ def _openai_responses(messages, model, api_key, base_url):
             }
             for m in messages
         ],
-        "tools": [response_tool],
+        "tools": [response_tool, {"type": "web_search"}],
         "tool_choice": "auto",
     }
     data = _post(
@@ -378,6 +378,7 @@ def _anthropic(messages, model, api_key, base_url):
         "model": model,
         "max_tokens": 4096,
         "messages": [{"role": m.get("role"), "content": _anthropic_content(m.get("content"))} for m in user_messages],
+        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
     }
     if system_parts:
         payload["system"] = "\n".join(system_parts).strip()
