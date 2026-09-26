@@ -7,10 +7,10 @@ on:
 
 jobs:
   validate-and-build:
-    runs-on: windows-latest
+    runs-on: windows-2025
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Validate Python syntax
         shell: pwsh
@@ -60,7 +60,7 @@ jobs:
           Write-Host "SHA256: $hash"
 
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: SP-AI-Assistant-Setup-0.3.0
           path: installer/output/*
