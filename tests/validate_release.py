@@ -178,6 +178,10 @@ def test_context_and_actions():
     assert "str(name): _normalize_parameter_value(value)" in actions
     assert "set_material_source" in actions
     assert "get_material_source" in actions
+    assert "ACTION_ALIASES" in actions
+    assert "insert_fill_layer" in actions
+    assert "source_mode" in actions
+    assert "_channel_source_value" in actions
 
 
 def test_runtime_gates_and_preexecution_validation():
