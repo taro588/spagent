@@ -474,23 +474,27 @@ class ChatDock(QtWidgets.QWidget):
     def _append(self, role, message, images=None):
         images = list(images or [])
         images.extend(self._extract_image_urls(message))
-        safe_role = html.escape(str(role))
         safe_message = html.escape(str(message or "")).replace("\n", "<br>")
+        is_user = str(role).startswith("你")
+        label = "你" if is_user else str(role)
+        align = "right" if is_user else "left"
+        bubble_bg = "#24272d" if is_user else "#181a1f"
+        border = "#343941" if is_user else "#262a31"
+        label_color = "#9ec5ff" if is_user else "#aeb5c2"
         image_html = ""
         for url in list(dict.fromkeys(images)):
             safe_url = html.escape(str(url), quote=True)
             image_html += (
-                '<div style="margin:8px 0;">'
-                f'<img src="{safe_url}" width="420" '
-                'style="border-radius:10px; border:1px solid #30343b;">'
+                '<div style="margin-top:8px;">'
+                f'<img src="{safe_url}" width="420" style="border-radius:10px; border:1px solid #30343b;">'
                 '</div>'
             )
         block = (
-            '<div style="margin:10px 0 14px 0;">'
-            f'<div style="color:#9aa1ad; font-weight:600; margin-bottom:4px;">{safe_role}</div>'
-            f'<div style="color:#f2f3f5; line-height:1.45;">{safe_message}</div>'
-            f'{image_html}'
-            '</div>'
+            f'<div align="{align}" style="margin:10px 2px 14px 2px;">'
+            f'<div style="color:{label_color}; font-weight:600; margin-bottom:4px;">{html.escape(label)}</div>'
+            f'<table cellpadding="0" cellspacing="0"><tr><td style="background:{bubble_bg}; border:1px solid {border}; '
+            f'border-radius:12px; padding:10px 12px; color:#f2f3f5; line-height:1.45; max-width:520px;">'
+            f'{safe_message}{image_html}</td></tr></table></div>'
         )
         self.history.append(block)
         self.history.verticalScrollBar().setValue(self.history.verticalScrollBar().maximum())
