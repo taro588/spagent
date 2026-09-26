@@ -235,14 +235,47 @@ def _gemini_parts(content):
     return parts
 
 def _openai_responses(messages, model, api_key, base_url):
+    response_tool = {
+        "type": "function",
+        "name": "painter_actions",
+        "description": PAINTER_ACTION_TOOL["function"]["description"],
+        "parameters": PAINTER_ACTION_TOOL["function"]["parameters"],
+        "strict": True,
+    }
+    payload = {
+        "model": model,
+        "input": [
+            {
+                "role": m.get("role"),
+                "content": _openai_message_content(m.get("content"), response_api=True),
+            }
+            for m in messages
+        ],
+        "tools": [response_tool],
+        "tool_choice": "auto",
+    }
     data = _post(
         base_url.rstrip("/") + "/responses",
-        {"model": model, "input": [{"role": m.get("role"), "content": _openai_message_content(m.get("content"), response_api=True)} for m in messages]},
+        payload,
         {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
     )
+
+    # Responses API returns a function_call item when the model decides to
+    # operate Painter. The plugin executes that allow-listed plan locally
+    # through Adobe's official Painter Python API.
+    for item in data.get("output", []) or []:
+        if item.get("type") == "function_call" and item.get("name") == "painter_actions":
+            arguments = item.get("arguments") or "{}"
+            try:
+                plan = json.loads(arguments)
+            except json.JSONDecodeError as exc:
+                raise AIError("OpenAI 返回的 Painter 工具参数不是有效 JSON") from exc
+            if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
+                return json.dumps(plan, ensure_ascii=False)
+
     text = _extract_openai_responses_text(data)
     if not text:
-        raise AIError("OpenAI 返回成功，但没有找到文本输出")
+        raise AIError("OpenAI 返回成功，但没有文本输出或 Painter 工具调用")
     return text
 
 
