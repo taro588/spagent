@@ -11,12 +11,12 @@ from core.painter_context import prompt_context
 from core.qt_compat import qt_modules
 from core.settings import provider_config, save_provider_config
 
-QtCore, QtWidgets = qt_modules()
+QtCore, QtGui, QtWidgets = qt_modules()
 
 SYSTEM_PROMPT = """你是 SP AI Assistant，运行在 Adobe Substance 3D Painter 内。
 你的职责是帮助用户进行游戏材质、PBR、Texture Set、图层、Mask、Generator、Filter 和导出工作。
 你可以读取当前 Painter 上下文。
-当用户要求修改 Painter 时，只生成 JSON 操作计划，不要声称已经执行。
+当用户要求修改 Painter 时，必须优先调用 painter_actions 工具生成可执行操作；插件会立即调用 Painter 官方 Python API。不要告诉用户只能生成 JSON，也不要要求用户手动操作 Painter。
 允许动作：create_fill_layer、create_paint_layer、create_group、add_mask、set_opacity、add_generator、add_filter、add_smart_mask、add_smart_material、set_fill_material、set_active_channels、set_projection_mode、set_projection_scale、set_fill_property、set_source_parameters、set_effect_parameters、verify_last_created_parameters、rename_selected、delete_selected、select_last_created、export_textures。
 删除、导出和批量修改属于高影响操作，必须生成计划并由用户明确确认后执行。
 资源名称必须来自当前 Painter 可搜索资源，不要编造。"""
@@ -130,6 +130,20 @@ class ChatDock(QtWidgets.QWidget):
             "低风险自动执行：仅自动执行低风险动作；高影响动作仍需确认。"
         )
         settings.addWidget(self.execution_mode, 4, 1)
+
+        settings.addWidget(QtWidgets.QLabel("SP 操作权限"), 5, 0)
+        self.permission_mode = QtWidgets.QComboBox()
+        self.permission_mode.addItem("仅查看", "readonly")
+        self.permission_mode.addItem("操作前询问", "confirm")
+        self.permission_mode.addItem("自动执行", "auto")
+        self.permission_mode.setCurrentIndex(2)
+        self.permission_mode.setToolTip("控制 AI 是否可以直接调用 Painter 官方 Python API")
+        settings.addWidget(self.permission_mode, 5, 1)
+
+        self.allow_high_impact = QtWidgets.QCheckBox("允许自动执行删除/导出等高影响操作")
+        self.allow_high_impact.setChecked(False)
+        settings.addWidget(self.allow_high_impact, 6, 1)
+
         self.settings_panel = QtWidgets.QWidget()
         self.settings_panel.setLayout(settings)
         self.settings_panel.setVisible(False)
@@ -226,6 +240,11 @@ class ChatDock(QtWidgets.QWidget):
             self.bottom_mode.blockSignals(False)
 
     def _sync_execution_mode(self, index):
+        self.execution_mode.blockSignals(True)
+        self.execution_mode.setCurrentIndex(index)
+        self.execution_mode.blockSignals(False)
+
+    def _sync_permission_mode(self, index):
         self.execution_mode.blockSignals(True)
         self.execution_mode.setCurrentIndex(index)
         self.execution_mode.blockSignals(False)
@@ -339,16 +358,16 @@ class ChatDock(QtWidgets.QWidget):
             self.status.setText("✗ 操作计划为空")
             return
 
-        mode = self.execution_mode.currentData()
+        mode = self.permission_mode.currentData() if hasattr(self, "permission_mode") else self.execution_mode.currentData()
         high_impact = bool(self._high_impact_actions(plan))
 
-        if mode == "plan":
-            self.status.setText("✓ 当前为“仅生成计划”，未执行")
+        if mode == "readonly":
+            self.status.setText("✓ 当前为“仅查看”，未执行 Painter 操作")
             return
 
         # Confirm mode asks for every plan. Auto mode only skips confirmation
         # when every action is outside the conservative high-impact set.
-        if mode == "confirm" or high_impact:
+        if mode == "confirm" or (high_impact and not self.allow_high_impact.isChecked()):
             if not self._confirm_execution(plan, high_impact=high_impact):
                 self.status.setText("已取消执行")
                 return
@@ -411,7 +430,7 @@ class ChatDock(QtWidgets.QWidget):
                 return
             self._last_plan = plan
             self.status.setText("✓ 已根据实际结果生成修正计划")
-            if self.execution_mode.currentData() == "auto":
+            if (self.permission_mode.currentData() if hasattr(self, "permission_mode") else self.execution_mode.currentData()) == "auto":
                 self._auto_execute_if_safe(plan)
         else:
             self.status.setText("✗ AI 没有返回有效修正计划")
