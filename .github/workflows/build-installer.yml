@@ -50,8 +50,10 @@ jobs:
       - name: Verify installer artifact
         shell: pwsh
         run: |
-          $exe = Get-ChildItem installer\output\*.exe -File
-          if (-not $exe) { throw "No installer EXE produced" }
+          $expected = "installer\output\SP_AI_Assistant_Setup_0.3.0.exe"
+          if (-not (Test-Path -LiteralPath $expected)) { throw "Expected installer EXE not produced: $expected" }
+          $exe = Get-Item -LiteralPath $expected
+          if ($exe.Length -lt 100000) { throw "Installer EXE is unexpectedly small: $($exe.Length) bytes" }
           Write-Host "Built: $($exe.FullName)"
 
       - name: Upload installer artifact
