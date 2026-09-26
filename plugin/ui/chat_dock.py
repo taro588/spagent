@@ -47,7 +47,7 @@ class _Worker(QtCore.QObject):
 
 
 class ChatDock(QtWidgets.QWidget):
-    def __init__(self, version_text="0.3.0"):
+    def __init__(self, version_text="0.3.8"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
