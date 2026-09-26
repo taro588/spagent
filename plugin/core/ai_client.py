@@ -25,22 +25,27 @@ PROVIDERS = {
     "DeepSeek": {
         "id": "deepseek",
         "base_url": "https://api.deepseek.com",
-        "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
+        "models": ["deepseek-chat", "deepseek-reasoner"],
     },
     "Kimi": {
         "id": "kimi",
         "base_url": "https://api.moonshot.cn/v1",
-        "models": ["k3", "kimi-k2.7-code", "kimi-k2.6"],
+        "models": ["kimi-k2.5", "kimi-k2"],
     },
     "Qwen": {
         "id": "qwen",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "models": ["qwen3.8-max", "qwen3.7-max", "qwen3.6-flash"],
+        "models": ["qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus"],
+    },
+    "GLM": {
+        "id": "glm",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "models": ["glm-5-turbo", "glm-5"],
     },
     "MiniMax": {
         "id": "minimax",
-        "base_url": "https://api.minimaxi.com/v1",
-        "models": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
+        "base_url": "https://api.minimax.io/v1",
+        "models": ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3"],
     },
     "OpenAI Compatible": {
         "id": "openai_compatible",
