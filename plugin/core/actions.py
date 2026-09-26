@@ -101,7 +101,25 @@ def _serializable(value):
 def _value_close(actual, expected, tolerance=1e-4):
     if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
         return abs(float(actual) - float(expected)) <= tolerance
-    return _serializable(actual) == _serializable(expected)
+    if isinstance(actual, (list, tuple)) and isinstance(expected, (list, tuple)):
+        return len(actual) == len(expected) and all(
+            _value_close(a, e, tolerance) for a, e in zip(actual, expected)
+        )
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        if set(actual) != set(expected):
+            return False
+        return all(_value_close(actual[k], expected[k], tolerance) for k in actual)
+    # Painter commonly returns vector/color objects rather than JSON lists.
+    actual_serialized = _serializable(actual)
+    expected_serialized = _serializable(expected)
+    if isinstance(actual_serialized, dict) and isinstance(expected_serialized, dict):
+        if set(actual_serialized) != set(expected_serialized):
+            return False
+        return all(
+            _value_close(actual_serialized[k], expected_serialized[k], tolerance)
+            for k in actual_serialized
+        )
+    return actual_serialized == expected_serialized
 
 
 def _material_source(node):
