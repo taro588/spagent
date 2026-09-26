@@ -50,7 +50,7 @@ jobs:
       - name: Verify installer artifact
         shell: pwsh
         run: |
-          $expected = "installer\output\SP_AI_Assistant_Setup_0.3.4.exe"
+          $expected = "installer\output\SP_AI_Assistant_Setup_0.3.5.exe"
           if (-not (Test-Path -LiteralPath $expected)) { throw "Expected installer EXE not produced: $expected" }
           $exe = Get-Item -LiteralPath $expected
           if ($exe.Length -lt 100000) { throw "Installer EXE is unexpectedly small: $($exe.Length) bytes" }
