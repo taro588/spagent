@@ -12,7 +12,7 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.4.2"
+    assert data["version"] == "0.4.3"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["max_tested_painter_version"] == "11.0.x"
@@ -32,13 +32,13 @@ def test_release_versions_are_synchronized():
     assert f'#define MyAppVersion "{version}"' in iss
     assert f"name: SP-AI-Assistant-Setup-{version}" in workflow
     assert f"SP_AI_Assistant_Setup_{{#MyAppVersion}}" in iss
-    assert "SP_AI_Assistant_Setup_0.4.2.sha256" in workflow
+    assert "SP_AI_Assistant_Setup_0.4.3.sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
 
 
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.4.2"' in iss
+    assert '#define MyAppVersion "0.4.3"' in iss
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
     assert 'Source: "..\\plugin\\core\\*"' in iss
@@ -293,3 +293,20 @@ def test_entrypoint_resilient():
     assert "sp_ai_assistant_load_error.log" in text
 
 # 0.4.2 workflow controls are covered by source compilation and runtime smoke checks.
+
+
+def test_browser_and_persistent_dock():
+    entry = (ROOT / "plugin" / "sp_ai_assistant.py").read_text(encoding="utf-8")
+    browser = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(encoding="utf-8")
+    manifest = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
+    assert "BrowserPanel" in entry
+    assert "get_main_window" in entry
+    assert "splitDockWidget" in entry
+    assert "SPAI_Assistant_Dock" in entry
+    assert "SPAI_Browser_Dock" in entry
+    assert "reload_plugin" in entry
+    assert "QWebEngineView" in browser
+    assert "returnPressed" in browser
+    assert "back()" in browser and "forward()" in browser
+    assert "embedded_browser" in manifest["capabilities"]
+    assert "persistent_dock_layout" in manifest["capabilities"]
