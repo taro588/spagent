@@ -233,7 +233,12 @@ def execute_plan(plan: dict) -> dict:
                 )
                 node.set_name(_name(action.get("name"), "AI Fill Layer"))
                 created.append(node)
-                results.append({"action": kind, "name": node.get_name(), "uid": node.uid()})
+                results.append({
+                    "action": kind,
+                    "name": node.get_name(),
+                    "uid": node.uid(),
+                    "api": "substance_painter.layerstack.insert_fill",
+                })
 
             elif kind == "create_paint_layer":
                 node = sp.layerstack.insert_paint(
