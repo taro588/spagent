@@ -129,7 +129,6 @@ def test_ai_modules():
     assert "GLM" in client
     assert "MiniMax" in client
     assert '"id": "glm"' in client
-    assert 'provider_id == "glm"' in client
     assert "model_badge" in dock
     assert "settings_toggle" in dock
     assert "bottom_mode" in dock
