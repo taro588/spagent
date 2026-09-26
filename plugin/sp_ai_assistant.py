@@ -12,7 +12,7 @@ from core.self_check import run_self_check
 from ui.chat_dock import ChatDock
 
 _widgets = []
-PLUGIN_VERSION = "0.3.4"
+PLUGIN_VERSION = "0.3.5"
 MIN_PAINTER_VERSION = (7, 2, 0)
 
 
@@ -24,7 +24,7 @@ def start_plugin():
     if _widgets:
         return
 
-    QtCore, QtWidgets = qt_modules()
+    QtCore, QtGui, QtWidgets = qt_modules()
     painter_version = tuple(substance_painter.application.version_info())
     if painter_version < MIN_PAINTER_VERSION:
         QtWidgets.QMessageBox.critical(
