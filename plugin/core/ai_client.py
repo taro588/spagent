@@ -118,6 +118,83 @@ def _extract_openai_responses_text(data):
     return "\n".join(parts).strip()
 
 
+
+def _openai_message_content(content, response_api=False):
+    """Normalize chat content for OpenAI Responses and Chat Completions APIs."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content or "")
+    parts = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("type")
+        if kind == "text":
+            parts.append({
+                "type": "input_text" if response_api else "text",
+                "text": str(item.get("text", "")),
+            })
+        elif kind in {"image_url", "input_image"}:
+            url = item.get("data_url") or item.get("url")
+            image_url = item.get("image_url")
+            if isinstance(image_url, dict):
+                url = image_url.get("url") or url
+            if url:
+                if response_api:
+                    parts.append({"type": "input_image", "image_url": url})
+                else:
+                    parts.append({"type": "image_url", "image_url": {"url": url}})
+    return parts
+
+
+def _anthropic_content(content):
+    if isinstance(content, str):
+        return content
+    parts = []
+    for item in content if isinstance(content, list) else []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text":
+            parts.append({"type": "text", "text": str(item.get("text", ""))})
+        elif item.get("type") == "image_url":
+            data_url = item.get("data_url") or item.get("url")
+            if isinstance(data_url, str) and data_url.startswith("data:"):
+                header, encoded = data_url.split(",", 1)
+                media_type = header.split(";", 1)[0].replace("data:", "")
+                parts.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": encoded,
+                    },
+                })
+    return parts
+
+
+def _gemini_parts(content):
+    if isinstance(content, str):
+        return [{"text": content}]
+    parts = []
+    for item in content if isinstance(content, list) else []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text":
+            parts.append({"text": str(item.get("text", ""))})
+        elif item.get("type") == "image_url":
+            data_url = item.get("data_url") or item.get("url")
+            if isinstance(data_url, str) and data_url.startswith("data:"):
+                header, encoded = data_url.split(",", 1)
+                mime = header.split(";", 1)[0].replace("data:", "")
+                parts.append({
+                    "inline_data": {
+                        "mime_type": mime,
+                        "data": encoded,
+                    }
+                })
+    return parts
+
 def _openai_responses(messages, model, api_key, base_url):
     data = _post(
         base_url.rstrip("/") + "/responses",
