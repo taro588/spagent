@@ -204,14 +204,14 @@ def test_chat_dock_has_correction_loop():
     assert "verify_last_created_parameters" in text
 
 
-def test_chat_dock_has_plan_preview_and_confirmation():
+def test_chat_dock_has_chat_only_ui_and_confirmation():
     root = Path(__file__).resolve().parents[1]
     text = (root / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
-    assert "plan_preview" in text
-    assert "QMessageBox.warning" in text
-    assert "delete_selected" in text
-    assert "export_textures" in text
-
+    assert "QTextBrowser" in text
+    assert "操作预览" not in text
+    assert "执行上一次计划" not in text
+    assert "_confirm_execution" in text
+    assert "_attach_file" in text
 
 def test_chat_dock_has_robust_plan_parser():
     root = Path(__file__).resolve().parents[1]
