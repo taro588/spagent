@@ -750,6 +750,7 @@ class ChatDock(QtWidgets.QWidget):
         self._execution_repair_attempts = 0
         text = self.input.toPlainText().strip()
         workflow_options = {
+            "web_search": bool(self.web_search_enabled.isChecked()),
             "bake": bool(self.workflow_bake.isChecked()),
             "smart_mask": bool(self.workflow_mask.isChecked()),
             "generator": bool(self.workflow_generator.isChecked()),
@@ -769,7 +770,14 @@ class ChatDock(QtWidgets.QWidget):
         except Exception as exc:
             context = json.dumps({"context_error": str(exc)}, ensure_ascii=False)
 
-        enriched = "当前 Painter 上下文：\n" + context + "\n\n用户请求：\n" + text
+        search_context = ""
+        if self.web_search_enabled.isChecked():
+            try:
+                search_result = web_search(text, 6)
+                search_context = "\n\n联网搜索结果（仅供模型参考）：\n" + json.dumps(search_result, ensure_ascii=False, indent=2)
+            except Exception as exc:
+                search_context = "\n\n联网搜索失败：\n" + str(exc)
+        enriched = "当前 Painter 上下文：\n" + context + search_context + "\n\n用户请求：\n" + text
         if self._attachments:
             content = [{"type": "text", "text": enriched}]
             for item in self._attachments:
