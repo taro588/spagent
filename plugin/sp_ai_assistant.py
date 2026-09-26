@@ -5,9 +5,13 @@ import traceback
 
 import substance_painter
 import substance_painter.ui
+from core.qt_compat import qt_modules
 
 _widgets = []
-PLUGIN_VERSION = "0.3.9"
+_dock = None
+_browser_dock = None
+_menu_actions = []
+PLUGIN_VERSION = "0.4.3"
 MIN_PAINTER_VERSION = (7, 2, 0)
 
 
@@ -27,26 +31,33 @@ def _error_log(message):
         pass
 
 
+def _show_docks():
+    global _dock, _browser_dock
+    for dock in (_dock, _browser_dock):
+        if dock is not None:
+            try:
+                dock.show()
+                dock.raise_()
+            except Exception:
+                pass
+
+
 def start_plugin():
-    if _widgets:
+    global _dock, _browser_dock, _menu_actions
+    if _dock is not None:
+        _show_docks()
         return
 
     painter_version = tuple(substance_painter.application.version_info())
     try:
-        from core.qt_compat import qt_modules
         QtCore, QtGui, QtWidgets = qt_modules()
     except Exception as exc:
         _error_log(traceback.format_exc())
-        # Keep the entry point itself loadable so Painter does not silently lose the plugin.
         try:
             from PySide6 import QtWidgets
             QtWidgets.QMessageBox.critical(
-                None,
-                "SP AI Assistant 加载失败",
-                "插件入口已加载，但内部模块初始化失败。\n\n"
-                + type(exc).__name__ + ": " + str(exc)
-                + "\n\n详细错误已写入：\n"
-                + os.path.join(os.path.expanduser("~"), "Documents", "Adobe", "Adobe Substance 3D Painter", "sp_ai_assistant_load_error.log"),
+                None, "SP AI Assistant 加载失败",
+                "插件入口已加载，但 Qt 初始化失败。\n\n" + type(exc).__name__ + ": " + str(exc)
             )
         except Exception:
             pass
@@ -54,40 +65,76 @@ def start_plugin():
 
     if painter_version < MIN_PAINTER_VERSION:
         QtWidgets.QMessageBox.critical(
-            None,
-            "SP AI Assistant",
-            "当前 Substance 3D Painter 版本不受支持。\n"
-            "最低支持版本：7.2.0\n"
-            "当前版本：" + _version(),
+            None, "SP AI Assistant",
+            "当前 Substance 3D Painter 版本不受支持。\n最低支持版本：7.2.0\n当前版本：" + _version()
         )
         return
 
     try:
         from ui.chat_dock import ChatDock
-        widget = ChatDock(PLUGIN_VERSION)
-        widget.setProperty("spai_version", PLUGIN_VERSION)
-        widget.setWindowTitle("SP AI Assistant")
-        substance_painter.ui.add_dock_widget(widget)
-        _widgets.append(widget)
+        from ui.browser_panel import BrowserPanel
+
+        chat_widget = ChatDock(PLUGIN_VERSION)
+        chat_widget.setProperty("spai_version", PLUGIN_VERSION)
+        chat_widget.setObjectName("SPAI_Assistant_Dock")
+        chat_widget.setWindowTitle("SP AI Assistant")
+        chat_widget.setWindowIcon(QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_ComputerIcon))
+
+        browser_widget = BrowserPanel()
+        browser_widget.setObjectName("SPAI_Browser_Dock")
+        browser_widget.setWindowTitle("SP AI Browser")
+        browser_widget.setWindowIcon(QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_DialogHelpButton))
+
+        _dock = substance_painter.ui.add_dock_widget(chat_widget)
+        _browser_dock = substance_painter.ui.add_dock_widget(browser_widget)
+
+        try:
+            main_window = substance_painter.ui.get_main_window()
+            main_window.splitDockWidget(_dock, _browser_dock, QtCore.Qt.Orientation.Horizontal)
+            main_window.resizeDocks([_dock, _browser_dock], [620, 520], QtCore.Qt.Orientation.Horizontal)
+        except Exception:
+            pass
+
+        action = QtGui.QAction("SP AI Assistant", None)
+        action.triggered.connect(_show_docks)
+        substance_painter.ui.add_action(substance_painter.ui.ApplicationMenu.Window, action)
+        _menu_actions.append(action)
+
+        browser_action = QtGui.QAction("SP AI Browser", None)
+        browser_action.triggered.connect(lambda: _browser_dock.show() if _browser_dock is not None else None)
+        substance_painter.ui.add_action(substance_painter.ui.ApplicationMenu.Window, browser_action)
+        _menu_actions.append(browser_action)
+
+        _widgets.extend([chat_widget, browser_widget])
     except Exception as exc:
         _error_log(traceback.format_exc())
-        QtWidgets.QMessageBox.critical(
-            None,
-            "SP AI Assistant 加载失败",
-            "插件入口已识别，但界面模块启动失败。\n\n"
-            + type(exc).__name__ + ": " + str(exc)
-            + "\n\n详细错误已写入：\n"
-            + os.path.join(os.path.expanduser("~"), "Documents", "Adobe", "Adobe Substance 3D Painter", "sp_ai_assistant_load_error.log"),
-        )
-
+        _dock = None
+        _browser_dock = None
+        try:
+            QtWidgets.QMessageBox.critical(
+                None, "SP AI Assistant 加载失败",
+                "插件入口已识别，但界面启动失败。\n\n" + type(exc).__name__ + ": " + str(exc)
+            )
+        except Exception:
+            pass
 
 def close_plugin():
-    for widget in _widgets:
+    global _dock, _browser_dock, _menu_actions
+    for action in list(_menu_actions):
+        try:
+            substance_painter.ui.delete_ui_element(action)
+        except Exception:
+            pass
+    _menu_actions.clear()
+
+    for widget in list(_widgets):
         try:
             substance_painter.ui.delete_ui_element(widget)
         except Exception:
             pass
     _widgets.clear()
+    _dock = None
+    _browser_dock = None
 
 
 if __name__ == "__main__":
