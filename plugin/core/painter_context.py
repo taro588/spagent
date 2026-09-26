@@ -107,6 +107,18 @@ def snapshot() -> dict:
 
         resolution = material.get_resolution()
         result["resolution"] = [resolution.width, resolution.height]
+        try:
+            result["available_channels"] = [
+                getattr(channel, "name", str(channel))
+                for channel in stack.all_channels().keys()
+            ]
+        except Exception:
+            result["available_channels"] = []
+        result["mesh_map_workflow"] = {
+            "bake_api_available": hasattr(sp.baking, "bake_selected_textures_async"),
+            "bake_is_async": True,
+            "recommended_mesh_maps": ["Normal", "WorldSpaceNormal", "AO", "Curvature", "Position", "Thickness"],
+        }
 
         result["layers"] = [
             _node_info(node)
