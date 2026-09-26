@@ -60,6 +60,7 @@ class ChatDock(QtWidgets.QWidget):
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._thread = None
         self._worker = None
+        self._pending_request = None
         self._last_plan = None
         self._last_execution = None
         self._build_ui(version_text)
@@ -341,6 +342,7 @@ class ChatDock(QtWidgets.QWidget):
 
     def _start_request(self, messages, callback):
         if self._thread is not None:
+            self._pending_request = (messages, callback)
             return
 
         provider = self.provider.currentText()
@@ -399,14 +401,7 @@ class ChatDock(QtWidgets.QWidget):
         if state == "ok":
             self._messages.append({"role": "assistant", "content": text})
             self._append("AI", text)
-            candidate = text.strip()
-            fence = chr(96) * 3
-            if candidate.startswith(fence):
-                candidate = candidate.replace(fence + "json", "", 1).replace(fence, "").strip()
-            try:
-                plan = json.loads(candidate)
-            except Exception:
-                plan = None
+            plan = self._parse_plan_response(text)
             if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
                 self._last_plan = plan
                 self._show_plan_preview(plan)
@@ -442,6 +437,11 @@ class ChatDock(QtWidgets.QWidget):
         self._thread = None
         self._worker = None
         self._set_busy(False)
+        pending = self._pending_request
+        self._pending_request = None
+        if pending is not None:
+            messages, callback = pending
+            QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, callback))
 
 
 def build_chat_dock(version_text="0.3.0"):
