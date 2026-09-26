@@ -25,14 +25,22 @@ jobs:
           }
           if ($failed) { throw "One or more Python files failed syntax compilation. See syntax_report.txt." }
 
-      - name: Validate Python syntax
+      - name: Validate Python and release tests
         shell: pwsh
         run: |
           python -m pip install -q pytest
           python -m compileall -q plugin
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pytest -q tests/validate_release.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest -q tests/validate_release.py 2>&1 | Tee-Object -FilePath pytest_report.txt
+          if ($LASTEXITCODE -ne 0) { throw "Release tests failed. See pytest_report.txt." }
+
+      - name: Upload pytest diagnostic
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: SP-AI-Assistant-0.4.2-pytest-diagnostic
+          path: pytest_report.txt
+          if-no-files-found: warn
 
       - name: Upload syntax diagnostic
         if: always()
