@@ -71,6 +71,9 @@ SUPPORTED_ACTIONS = {
     "delete_selected",
     "select_last_created",
     "export_textures",
+    "apply_base_material",
+    "auto_material_workflow",
+    "ensure_texture_set_ready",
 }
 
 
@@ -250,10 +253,62 @@ def _set_public_params(obj, values, allowed):
     for key, value in values.items():
         setattr(obj, key, _normalize_parameter_value(value))
 
+def _expand_workflow_actions(plan: dict) -> dict:
+    """Expand high-level intent into deterministic official Painter API actions."""
+    expanded = []
+    for action in plan.get("actions", []):
+        kind = ACTION_ALIASES.get(str(action.get("action") or "").strip(), action.get("action"))
+        if kind == "apply_base_material":
+            name = _name(action.get("name"), "AI Base Material")
+            expanded.append({"action": "create_fill_layer", "name": name})
+            expanded.append({"action": "set_active_channels", "channels": action.get("channels") or ["BaseColor", "Roughness", "Metallic", "Normal", "Height"]})
+            if action.get("material") or action.get("resource"):
+                expanded.append({"action": "set_fill_material", "name": action.get("material") or action.get("resource")})
+            values = action.get("parameters") or {}
+            aliases = {
+                "basecolor": "BaseColor", "base_color": "BaseColor", "color": "BaseColor",
+                "roughness": "Roughness", "metallic": "Metallic", "metalness": "Metallic",
+                "height": "Height", "normal": "Normal", "emissive": "Emissive",
+            }
+            for key, value in values.items():
+                expanded.append({"action": "set_fill_property", "property": aliases.get(str(key).casefold(), str(key)), "value": value})
+            if action.get("smart_mask") or action.get("mask"):
+                expanded.append({"action": "add_smart_mask", "name": action.get("smart_mask") or action.get("mask")})
+            if action.get("generator"):
+                expanded.append({"action": "add_generator", "name": action["generator"], "stack": "mask"})
+            if action.get("filter"):
+                expanded.append({"action": "add_filter", "name": action["filter"], "stack": "content"})
+            expanded.append({"action": "select_last_created"})
+            if values:
+                expanded.append({"action": "verify_last_created_parameters", "parameters": values})
+        elif kind == "auto_material_workflow":
+            if action.get("bake", False):
+                expanded.append({"action": "bake_start"})
+            base = dict(action)
+            base["action"] = "apply_base_material"
+            expanded.extend(_expand_workflow_actions({"actions": [base]})["actions"])
+            if action.get("export_path"):
+                expanded.append({
+                    "action": "export_textures",
+                    "export_path": action["export_path"],
+                    "preset": action.get("export_preset", "PBR Metallic Roughness"),
+                })
+        elif kind == "ensure_texture_set_ready":
+            expanded.append({"action": "texture_stack_select", "stack": action.get("stack", "active")})
+            if action.get("resolution"):
+                expanded.append({"action": "texture_set_resolution", "resolution": action["resolution"]})
+            if action.get("bake", False):
+                expanded.append({"action": "bake_start"})
+        else:
+            expanded.append(action)
+    return {"actions": expanded}
+
+
 def validate_plan(plan: dict) -> dict:
     """Validate an AI-generated plan before any Painter mutation occurs."""
     if not isinstance(plan, dict) or not isinstance(plan.get("actions"), list):
         raise ActionError("执行计划必须是包含 actions 数组的对象。")
+    plan = _expand_workflow_actions(plan)
     actions = plan["actions"]
     if not actions:
         raise ActionError("执行计划不能为空。")
@@ -310,6 +365,9 @@ def validate_plan(plan: dict) -> dict:
         "set_fill_material": ("name",),
         "rename_selected": ("name",),
         "export_textures": ("export_path",),
+        "apply_base_material": (),
+        "auto_material_workflow": (),
+        "ensure_texture_set_ready": (),
     }
     for index, action in enumerate(actions, 1):
         if not isinstance(action, dict):
