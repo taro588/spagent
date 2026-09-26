@@ -1,7 +1,7 @@
 {
   "id": "com.taro588.sp-ai-assistant",
   "name": "SP AI Assistant",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "api": "python",
   "min_painter_version": "7.2.0",
   "max_tested_painter_version": "11.0.x",
