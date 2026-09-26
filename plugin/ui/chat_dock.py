@@ -144,6 +144,7 @@ class ChatDock(QtWidgets.QWidget):
             ("测试连接", self._test_connection),
             ("读取 Painter 上下文", self._context),
             ("运行插件自检", self._self_check),
+            ("官方API直连测试", self._official_api_test),
             ("清空对话", self._clear),
         ):
             button = QtWidgets.QPushButton(label)
@@ -452,6 +453,18 @@ class ChatDock(QtWidgets.QWidget):
         self.status.setText("✓ 已获得可执行计划")
         if self.execution_mode.currentData() == "auto":
             self._auto_execute_if_safe(plan)
+    def _official_api_test(self):
+        """Call the official Painter Python API bridge without involving the AI."""
+        test_name = "SP_AI_API_TEST"
+        plan = {"actions": [{"action": "create_fill_layer", "name": test_name}]}
+        try:
+            result = execute_plan(plan)
+            self._last_execution = result
+            self._append("官方 API 测试", "已直接调用 substance_painter.layerstack.insert_fill()。\n" + json.dumps(result, ensure_ascii=False, indent=2))
+            self.status.setText("✓ 官方 Painter Python API 执行成功")
+        except Exception as exc:
+            self._append("官方 API 测试失败", type(exc).__name__ + ": " + str(exc))
+            self.status.setText("✗ 官方 Painter Python API 执行失败")
     def _clear(self):
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._attachments.clear()
