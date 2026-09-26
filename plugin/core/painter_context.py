@@ -57,6 +57,17 @@ def _node_info(node):
         name = ""
 
     item = {"uid": node.uid(), "name": name, "type": node_type}
+    try:
+        mode = getattr(node, "source_mode", None)
+        item["source_mode"] = getattr(mode, "name", str(mode)) if mode is not None else None
+    except Exception:
+        item["source_mode"] = None
+    try:
+        channels = getattr(node, "active_channels", None)
+        if channels is not None:
+            item["active_channels"] = [getattr(ch, "name", str(ch)) for ch in channels]
+    except Exception:
+        item["active_channels"] = []
     item.update(_source_info(node))
     if not item.get("parameters"):
         item.update(_effect_info(node))
