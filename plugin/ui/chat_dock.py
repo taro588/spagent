@@ -166,12 +166,14 @@ class ChatDock(QtWidgets.QWidget):
         self.attach = QtWidgets.QPushButton("+")
         self.attach.setFixedWidth(34)
         self.attach.setToolTip("添加参考图、材质图或其他图片，让 AI 分析后参与制作")
-        self.attach.clicked.connect(self._attach_file)
+        self.attach.clicked.connect(self._show_attach_menu)
         bottom.addWidget(self.attach)
 
-        self.input = QtWidgets.QLineEdit()
+        self.input = QtWidgets.QPlainTextEdit()
+        self.input.setObjectName("SPAI_ChatInput")
         self.input.setPlaceholderText("输入 @ 即可添加 Painter 上下文，例如：做一个旧水泥材质")
-        self.input.returnPressed.connect(self._send)
+        self.input.setFixedHeight(46)
+        self.input.installEventFilter(self)
         bottom.addWidget(self.input, 1)
 
         self.bottom_mode = QtWidgets.QComboBox()
@@ -567,7 +569,7 @@ class ChatDock(QtWidgets.QWidget):
             self._append("你 · 参考图", "已添加到本轮请求", [item["data_url"] for item in self._attachments[-added:]])
 
     def _send(self):
-        text = self.input.text().strip()
+        text = self.input.toPlainText().strip()
         if not text or self._thread is not None:
             return
 
