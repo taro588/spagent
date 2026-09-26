@@ -604,6 +604,22 @@ class ChatDock(QtWidgets.QWidget):
             self._append("你 · 参考图", "已添加到本轮请求", [item["data_url"] for item in self._attachments[-added:]])
 
 
+    def eventFilter(self, watched, event):
+        if watched is self.input and event.type() == QtCore.QEvent.Type.KeyPress:
+            if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+                if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
+                    return False
+                self._send()
+                return True
+            if (
+                event.key() == QtCore.Qt.Key_V
+                and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
+                and self._clipboard_has_image()
+            ):
+                self._add_clipboard_image()
+                return True
+        return super().eventFilter(watched, event)
+
     def _send(self):
         text = self.input.toPlainText().strip()
         if not text or self._thread is not None:
