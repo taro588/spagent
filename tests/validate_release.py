@@ -154,6 +154,15 @@ def test_context_and_actions():
     assert "get_material_source" in actions
 
 
+def test_runtime_gates_and_preexecution_validation():
+    entry = (ROOT / "plugin" / "sp_ai_assistant.py").read_text(encoding="utf-8")
+    dock = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+    assert 'MIN_PAINTER_VERSION = (7, 2, 0)' in entry
+    assert "painter_version < MIN_PAINTER_VERSION" in entry
+    assert "validate_plan(plan)" in dock
+    assert "运行插件自检" in dock
+
+
 def test_plugin_entry():
     source = (ROOT / "plugin" / "sp_ai_assistant.py").read_text(encoding="utf-8")
     assert "application.version_info()" in source or "substance_painter" in source
