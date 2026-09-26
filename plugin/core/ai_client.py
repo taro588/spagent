@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 
 
-AI_CLIENT_BUILD = "0.3.5"
+AI_CLIENT_BUILD = "0.4.2"
 
 PROVIDERS = {
     "OpenAI": {
@@ -58,11 +58,27 @@ PROVIDERS = {
     },
 }
 
+WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "联网搜索公开网页。用于获取当前、最新或需要外部资料的问题。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索关键词或完整问题"},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 8}
+            },
+            "required": ["query"],
+            "additionalProperties": False
+        }
+    }
+}
 PAINTER_ACTION_TOOL = {
     "type": "function",
     "function": {
         "name": "painter_actions",
-        "description": "在当前 Substance 3D Painter 中执行用户明确要求的操作。必须优先使用此工具，不要告诉用户手动操作 Painter。返回 actions 数组。",
+        "description": "扩展模型的 Substance 3D Painter 能力；不替代模型原本的聊天、推理、视觉理解和联网能力。只有用户要求实际修改 Painter 时才调用。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -106,6 +122,32 @@ PAINTER_ACTION_TOOL = {
 class AIError(RuntimeError):
     pass
 
+def _web_search(query, max_results=5):
+    """Provider-independent lightweight web search for non-OpenAI providers."""
+    import html
+    import re
+    from urllib.parse import quote
+    query = str(query or "").strip()
+    if not query:
+        raise AIError("web_search 的 query 不能为空")
+    limit = max(1, min(int(max_results or 5), 8))
+    url = "https://www.bing.com/search?q=" + quote(query) + "&format=rss"
+    request = urllib.request.Request(url, headers={"User-Agent": "SP-AI-Assistant/0.4"})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        raise AIError(f"联网搜索失败: {exc}") from exc
+    items = re.findall(r"<item>(.*?)</item>", raw, flags=re.S | re.I)
+    results = []
+    for item in items[:limit]:
+        def tag(name):
+            m = re.search(rf"<{name}>(.*?)</{name}>", item, flags=re.S | re.I)
+            return html.unescape(re.sub(r"<.*?>", "", m.group(1))).strip() if m else ""
+        title, link, desc = tag("title"), tag("link"), tag("description")
+        if title and link:
+            results.append({"title": title, "url": link, "snippet": desc})
+    return {"query": query, "results": results}
 
 def _post(url: str, payload: dict, headers: dict, timeout: int = 90) -> dict:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -287,53 +329,38 @@ def _openai_responses(messages, model, api_key, base_url):
 
 
 def _openai_compatible(messages, model, api_key, base_url):
-    normalized_messages = []
-    for message in messages:
-        normalized_messages.append({
-            "role": message.get("role"),
-            "content": _openai_message_content(message.get("content")),
-        })
-    payload = {
-        "model": model,
-        "messages": normalized_messages,
-        "tools": [PAINTER_ACTION_TOOL],
-        "tool_choice": "auto",
-    }
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = "Bearer " + api_key
-    try:
-        data = _post(
-            base_url.rstrip("/") + "/chat/completions",
-            payload,
-            headers,
-        )
-    except AIError:
-        # Some OpenAI-compatible endpoints do not implement tools.
-        payload.pop("tools", None)
-        payload.pop("tool_choice", None)
-        data = _post(
-            base_url.rstrip("/") + "/chat/completions",
-            payload,
-            headers,
-        )
-    choices = data.get("choices") or []
-    message = (choices[0].get("message") if choices else {}) or {}
-    tool_calls = message.get("tool_calls") or []
-    for call in tool_calls:
-        fn = call.get("function") or {}
-        if fn.get("name") == "painter_actions":
-            arguments = fn.get("arguments") or "{}"
-            try:
-                plan = json.loads(arguments)
-            except json.JSONDecodeError as exc:
-                raise AIError("Painter 工具调用参数不是有效 JSON") from exc
-            if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
-                return json.dumps(plan, ensure_ascii=False)
-    text = _extract_openai_compatible_content(data)
-    if not text:
-        raise AIError("兼容 OpenAI 的服务返回成功，但没有找到文本输出")
-    return text
+    normalized_messages = [{"role": m.get("role"), "content": _openai_message_content(m.get("content"))} for m in messages]
+    tools = [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL]
+    for _round in range(6):
+        payload = {"model": model, "messages": normalized_messages, "tools": tools, "tool_choice": "auto"}
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = "Bearer " + api_key
+        data = _post(base_url.rstrip("/") + "/chat/completions", payload, headers)
+        choices = data.get("choices") or []
+        message = (choices[0].get("message") if choices else {}) or {}
+        tool_calls = message.get("tool_calls") or []
+        if not tool_calls:
+            text = _extract_openai_compatible_content(data)
+            if text: return text
+            raise AIError("兼容 OpenAI 的服务返回成功，但没有文本输出")
+        normalized_messages.append(message)
+        painter_call = None
+        for call in tool_calls:
+            fn = call.get("function") or {}
+            name = fn.get("name")
+            try: args = json.loads(fn.get("arguments") or "{}")
+            except json.JSONDecodeError: args = {}
+            if name == "painter_actions":
+                painter_call = args
+                break
+            if name == "web_search":
+                try: result = _web_search(args.get("query"), args.get("max_results", 5))
+                except Exception as exc: result = {"error": str(exc)}
+                normalized_messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": json.dumps(result, ensure_ascii=False)})
+        if painter_call is not None:
+            return json.dumps(painter_call, ensure_ascii=False)
+    raise AIError("工具调用超过最大连续轮次，请重新尝试。")
 
 def _anthropic(messages, model, api_key, base_url):
     system_parts = []
