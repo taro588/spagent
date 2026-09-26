@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -35,19 +36,32 @@ class AIError(RuntimeError):
 
 def _post(url: str, payload: dict, headers: dict, timeout: int = 90) -> dict:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise AIError(f"HTTP {exc.code}: {body[:1000]}") from exc
-    except Exception as exc:
-        raise AIError(str(exc)) from exc
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise AIError("模型返回了无法解析的 JSON") from exc
+    max_attempts = 3
+    last_error = None
+    for attempt in range(max_attempts):
+        request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                raw = response.read().decode("utf-8")
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise AIError("模型返回了无法解析的 JSON") from exc
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            code = int(exc.code)
+            if code not in {408, 425, 429} and not 500 <= code <= 599:
+                raise AIError(f"HTTP {code}: {body[:1000]}") from exc
+            last_error = AIError(f"HTTP {code}: {body[:1000]}")
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = AIError(f"网络请求失败: {exc}")
+        except AIError:
+            raise
+        except Exception as exc:
+            last_error = AIError(str(exc))
+        if attempt < max_attempts - 1:
+            time.sleep(0.8 * (2 ** attempt))
+    raise last_error or AIError("AI 请求失败")
 
 
 def _extract_openai_compatible_content(data):
