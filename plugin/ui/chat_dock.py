@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from core.actions import execute_plan
+from core.actions import execute_plan, validate_plan
 from core.ai_client import PROVIDERS, chat
 from core.painter_context import prompt_context
 from core.qt_compat import qt_modules
@@ -114,6 +114,7 @@ class ChatDock(QtWidgets.QWidget):
             ("保存设置", self._save),
             ("测试连接", self._test_connection),
             ("读取 Painter 上下文", self._context),
+            ("运行插件自检", self._self_check),
             ("执行上一次计划", self._execute_last_plan),
             ("清空对话", self._clear),
         ):
@@ -182,6 +183,21 @@ class ChatDock(QtWidgets.QWidget):
         except Exception as exc:
             self.status.setText("✗ 上下文读取失败")
             self._append("错误", str(exc))
+    def _self_check(self):
+        try:
+            from core.self_check import run_self_check
+            result = run_self_check()
+            self._append("插件自检", json.dumps(result, ensure_ascii=False, indent=2))
+            required = {
+                "plugin_loaded": result.get("plugin_loaded") is True,
+                "substance_painter_python": result.get("substance_painter_python") is True,
+                "plugin_path": result.get("plugin_path") not in {"not_found", "check_failed", "not_checked"},
+            }
+            self.status.setText("✓ 插件自检通过" if all(required.values()) else "⚠ 插件自检发现问题")
+        except Exception as exc:
+            self.status.setText("✗ 插件自检失败")
+            self._append("自检错误", str(exc))
+
 
     @staticmethod
     def _parse_plan_response(text):
@@ -403,6 +419,14 @@ class ChatDock(QtWidgets.QWidget):
             self._append("AI", text)
             plan = self._parse_plan_response(text)
             if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
+                try:
+                    plan = validate_plan(plan)
+                except Exception as exc:
+                    self._last_plan = None
+                    self.plan_preview.setPlainText("（计划未通过安全验证）")
+                    self._append("计划验证失败", str(exc))
+                    self.status.setText("✗ AI 操作计划未通过安全验证")
+                    return
                 self._last_plan = plan
                 self._show_plan_preview(plan)
                 self.status.setText("✓ 已生成操作计划，请检查“操作预览”后执行")
