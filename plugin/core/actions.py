@@ -627,20 +627,32 @@ def execute_plan(plan: dict) -> dict:
                 expected = action.get("parameters")
                 if not isinstance(expected, dict) or not expected:
                     raise ActionError("parameters 必须是非空对象。")
-                if hasattr(node, "get_material_source"):
-                    try:
-                        source = node.get_material_source()
-                    except Exception:
-                        source = None
-                    if source is None and hasattr(node, "get_source"):
-                        channel_name = str(action.get("channel") or "BaseColor")
-                        channel = getattr(sp.textureset.ChannelType, channel_name)
-                        source = node.get_source(channel if getattr(node, "source_mode", None) is not None else None)
-                    if source is None or not hasattr(source, "get_parameters"):
-                        raise ActionError("当前节点没有可验证的参数源。")
-                    actual = source.get_parameters() if source else {}
+                # Split Fill verification must read the actual channel sources;
+                # Material verification may read SourceSubstance parameters.
+                mode = getattr(node, "source_mode", None)
+                mode_name = getattr(mode, "name", str(mode)) if mode is not None else ""
+                if mode_name == "Material":
+                    source = _material_source(node)
+                    actual = source.get_parameters()
+                    compare_mode = "material_parameters"
+                elif hasattr(node, "get_source") and mode is not None:
+                    actual = {}
+                    for key in expected:
+                        channel_name = {
+                            "basecolor": "BaseColor", "base_color": "BaseColor", "color": "BaseColor",
+                            "roughness": "Roughness", "metallic": "Metallic", "metalness": "Metallic",
+                            "height": "Height", "normal": "Normal", "emissive": "Emissive",
+                        }.get(str(key).casefold(), str(key))
+                        try:
+                            channel = getattr(sp.textureset.ChannelType, channel_name)
+                            source = node.get_source(channel)
+                            actual[key] = source
+                        except Exception:
+                            actual[key] = None
+                    compare_mode = "split_channels"
                 elif hasattr(node, "get_parameters"):
                     actual = node.get_parameters()
+                    compare_mode = "node_parameters"
                 else:
                     raise ActionError("目标节点不支持参数读取。")
                 mismatches = {}
@@ -654,6 +666,7 @@ def execute_plan(plan: dict) -> dict:
                     "target": node.get_name(),
                     "verified": not mismatches,
                     "mismatches": mismatches,
+                    "mode": compare_mode,
                 })
 
             elif kind == "set_opacity":
