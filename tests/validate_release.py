@@ -118,7 +118,7 @@ def test_ai_modules():
     assert "_extract_openai_compatible_content" in client
     assert 'if api_key:' in client
     assert 'headers["Authorization"] = "Bearer " + api_key' in client
-    assert 'info["id"] != "openai_compatible"' in client
+    assert 'provider_id in {"openai_compatible", "deepseek", "kimi", "qwen", "minimax"}' in client
     assert ":generateContent" in client
     assert "CryptProtectData" in settings
     assert "CryptUnprotectData" in settings
@@ -128,6 +128,8 @@ def test_ai_modules():
     assert "Qwen" in client
     assert "GLM" in client
     assert "MiniMax" in client
+    assert '"id": "glm"' in client
+    assert 'provider_id == "glm"' in client
     assert "model_badge" in dock
     assert "settings_toggle" in dock
     assert "bottom_mode" in dock
