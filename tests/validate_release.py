@@ -258,3 +258,17 @@ def test_official_api_diagnostic():
     text = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
     assert "_official_api_test" in text
     assert "substance_painter.layerstack.insert_fill" in text
+
+
+def test_agent_tool_calling_and_permissions():
+    chat = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+    client = (ROOT / "plugin" / "core" / "ai_client.py").read_text(encoding="utf-8")
+    qt = (ROOT / "plugin" / "core" / "qt_compat.py").read_text(encoding="utf-8")
+    assert "painter_actions" in client
+    assert '"tools": [PAINTER_ACTION_TOOL]' in client
+    assert "tool_calls" in client
+    assert "permission_mode" in chat
+    assert "allow_high_impact" in chat
+    assert "_plan_summary" in chat
+    assert "_fallback_plan_from_user_request" in chat
+    assert "QtGui" in qt
