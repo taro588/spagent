@@ -259,8 +259,6 @@ def _openai_compatible(messages, model, api_key, base_url):
         "tools": [PAINTER_ACTION_TOOL],
         "tool_choice": "auto",
     }
-    if provider_id := None:
-        pass
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
