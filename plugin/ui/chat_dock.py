@@ -6,7 +6,7 @@ import json
 import mimetypes
 
 from core.actions import execute_plan, validate_plan
-from core.ai_client import PROVIDERS, chat
+from core.ai_client import AI_CLIENT_BUILD, PROVIDERS, chat
 from core.painter_context import prompt_context
 from core.qt_compat import qt_modules
 from core.settings import provider_config, save_provider_config
