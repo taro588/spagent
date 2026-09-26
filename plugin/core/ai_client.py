@@ -82,7 +82,14 @@ PAINTER_ACTION_TOOL = {
                             "mode": {"type": "string"},
                             "scale": {"type": "array", "items": {"type": "number"}},
                             "background": {"type": "string"},
-                            "path": {"type": "string"}
+                            "path": {"type": "string"},
+                            "material": {"type": "string", "description": "Painter 中可搜索的 Substance/Material 资源名；只有用户明确指定或AI已从 resource_search 获得时填写。"},
+                            "bake": {"type": "boolean", "description": "是否执行 Mesh Map 烘焙。默认 false；仅当用户明确要求烘焙，或用户明确要求依赖已烘焙 Mesh Map 的效果时才设为 true。"},
+                            "smart_mask": {"type": "string", "description": "可选 Smart Mask 资源名。用户未要求时不要填写。"},
+                            "generator": {"type": "string", "description": "可选 Generator 资源名。用户未要求时不要填写。"},
+                            "filter": {"type": "string", "description": "可选 Filter 资源名。用户未要求时不要填写。"},
+                            "export_path": {"type": "string", "description": "仅用户明确要求导出贴图时填写。"},
+                            "export_preset": {"type": "string", "description": "仅用户明确要求导出时填写，例如 PBR Metallic Roughness。"}
                         },
                         "required": ["action"],
                         "additionalProperties": True
