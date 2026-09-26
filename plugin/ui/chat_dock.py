@@ -126,6 +126,9 @@ class ChatDock(QtWidgets.QWidget):
 
         workflow_group = QtWidgets.QGroupBox("材质工作流选项")
         workflow_layout = QtWidgets.QGridLayout(workflow_group)
+        self.web_search_enabled = QtWidgets.QCheckBox("允许联网搜索")
+        self.web_search_enabled.setToolTip("开启后先搜索公开网页，再把结果交给当前模型；不会替代原模型。")
+        workflow_layout.addWidget(self.web_search_enabled, 3, 0, 1, 2)
         self.workflow_bake = QtWidgets.QCheckBox("烘焙 Mesh Maps")
         self.workflow_mask = QtWidgets.QCheckBox("添加 Smart Mask")
         self.workflow_generator = QtWidgets.QCheckBox("添加 Generator")
