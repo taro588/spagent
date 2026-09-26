@@ -12,6 +12,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Diagnose Python syntax
+        shell: pwsh
+        run: |
+          $report = "syntax_report.txt"
+          Remove-Item -Force -ErrorAction SilentlyContinue $report
+          $failed = $false
+          Get-ChildItem -Recurse plugin -Filter *.py | ForEach-Object {
+            python -m py_compile $_.FullName 2>&1 | Tee-Object -FilePath $report -Append
+            if ($LASTEXITCODE -ne 0) { $failed = $true; Add-Content $report ("FAILED: " + $_.FullName) }
+            else { Add-Content $report ("OK: " + $_.FullName) }
+          }
+          if ($failed) { throw "One or more Python files failed syntax compilation. See syntax_report.txt." }
+
       - name: Validate Python syntax
         shell: pwsh
         run: |
@@ -20,6 +33,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pytest -q tests/validate_release.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload syntax diagnostic
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: SP-AI-Assistant-0.4.2-syntax-diagnostic
+          path: syntax_report.txt
+          if-no-files-found: warn
 
       - name: Install Inno Setup
         shell: pwsh
