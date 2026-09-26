@@ -50,18 +50,18 @@ jobs:
       - name: Verify installer artifact
         shell: pwsh
         run: |
-          $expected = "installer\output\SP_AI_Assistant_Setup_0.3.8.exe"
+          $expected = "installer\output\SP_AI_Assistant_Setup_0.3.9.exe"
           if (-not (Test-Path -LiteralPath $expected)) { throw "Expected installer EXE not produced: $expected" }
           $exe = Get-Item -LiteralPath $expected
           if ($exe.Length -lt 100000) { throw "Installer EXE is unexpectedly small: $($exe.Length) bytes" }
           Write-Host "Built: $($exe.FullName)"
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe.FullName).Hash
-          "$hash  $($exe.Name)" | Set-Content -Encoding ascii "installer\output\SP_AI_Assistant_Setup_0.3.8.sha256"
+          "$hash  $($exe.Name)" | Set-Content -Encoding ascii "installer\output\SP_AI_Assistant_Setup_0.3.9.sha256"
           Write-Host "SHA256: $hash"
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v5
         with:
-          name: SP-AI-Assistant-Setup-0.3.8
+          name: SP-AI-Assistant-Setup-0.3.9
           path: installer/output/*
           if-no-files-found: error
