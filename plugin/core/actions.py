@@ -2,6 +2,18 @@ from __future__ import annotations
 
 import substance_painter as sp
 
+ACTION_ALIASES = {
+    "insert_fill_layer": "create_fill_layer",
+    "insert_paint_layer": "create_paint_layer",
+    "insert_group": "create_group",
+    "insert_generator": "add_generator",
+    "insert_filter": "add_filter",
+    "insert_smart_mask": "add_smart_mask",
+    "insert_smart_material": "add_smart_material",
+    "set_fill_color": "set_uniform_color",
+    "set_channel_color": "set_uniform_color",
+}
+
 SUPPORTED_ACTIONS = {
     "create_fill_layer",
     "create_paint_layer",
@@ -285,7 +297,9 @@ def validate_plan(plan: dict) -> dict:
     for index, action in enumerate(actions, 1):
         if not isinstance(action, dict):
             raise ActionError(f"第 {index} 个动作必须是对象。")
-        kind = action.get("action")
+        kind = ACTION_ALIASES.get(str(action.get("action") or "").strip(), action.get("action"))
+        if kind != action.get("action"):
+            action["action"] = kind
         if kind not in SUPPORTED_ACTIONS:
             raise ActionError(f"第 {index} 个动作不允许执行: {kind}")
         for field in required.get(kind, ()):
@@ -334,7 +348,9 @@ def execute_plan(plan: dict) -> dict:
             if not isinstance(action, dict):
                 raise ActionError(f"第 {index + 1} 个动作不是对象。")
 
-            kind = action.get("action")
+            kind = ACTION_ALIASES.get(str(action.get("action") or "").strip(), action.get("action"))
+            if kind != action.get("action"):
+                action["action"] = kind
             if kind not in SUPPORTED_ACTIONS:
                 raise ActionError(f"不允许执行动作: {kind}")
 
@@ -429,16 +445,59 @@ def execute_plan(plan: dict) -> dict:
                 node = created[-1] if created else selected_nodes()[0]
                 if not isinstance(node, (sp.layerstack.FillLayerNode, sp.layerstack.FillEffectNode)):
                     raise ActionError("set_fill_property 只能作用于 Fill Layer/Fill Effect。")
-                source = _material_source(node)
                 property_name = str(action.get("property") or "").strip()
                 if not property_name:
                     raise ActionError("set_fill_property 需要 property。")
-                value = _normalize_parameter_value(action.get("value"))
-                available = source.get_parameters()
-                if property_name not in available:
-                    raise ActionError(f"当前材质不存在参数: {property_name}")
-                source.set_parameters({property_name: value})
-                results.append({"action": kind, "target": node.get_name(), "property": property_name, "value": value})
+                value = action.get("value")
+                channel_aliases = {
+                    "basecolor": "BaseColor", "base_color": "BaseColor", "color": "BaseColor",
+                    "roughness": "Roughness", "metallic": "Metallic", "metalness": "Metallic",
+                    "height": "Height", "normal": "Normal", "opacity": "Opacity",
+                    "emissive": "Emissive", "ao": "AmbientOcclusion", "ambientocclusion": "AmbientOcclusion",
+                }
+                channel_name = channel_aliases.get(property_name.casefold(), property_name)
+                try:
+                    channel = getattr(sp.textureset.ChannelType, channel_name)
+                except AttributeError:
+                    channel = None
+                source_mode = getattr(node, "source_mode", None)
+                if channel is not None and source_mode is not None:
+                    node.set_source(channel, _parse_color(value))
+                    results.append({"action": kind, "target": node.get_name(), "property": property_name,
+                                    "channel": channel_name, "value": value,
+                                    "source_mode": getattr(source_mode, "name", str(source_mode)),
+                                    "api": "substance_painter.layerstack.FillLayerNode.set_source"})
+                else:
+                    source = _material_source(node)
+                    value = _normalize_parameter_value(value)
+                    available = source.get_parameters()
+                    if property_name not in available:
+                        raise ActionError(f"当前材质不存在参数: {property_name}")
+                    source.set_parameters({property_name: value})
+                    results.append({"action": kind, "target": node.get_name(), "property": property_name, "value": value,
+                                    "source_mode": getattr(source_mode, "name", str(source_mode))})
+
+            elif kind == "set_fill_channel":
+                node = created[-1] if created else selected_nodes()[0]
+                if not isinstance(node, (sp.layerstack.FillLayerNode, sp.layerstack.FillEffectNode)):
+                    raise ActionError("set_fill_channel 只能作用于 Fill Layer/Fill Effect。")
+                channel = getattr(sp.textureset.ChannelType, str(action["channel"]))
+                channel_arg = channel if getattr(node, "source_mode", None) is not None else None
+                value = action.get("value")
+                if isinstance(value, dict) and value.get("resource"):
+                    matches = sp.resource.search(str(value["resource"]))
+                    if not matches:
+                        raise ActionError("找不到资源: " + str(value["resource"]))
+                    source_value = matches[0].identifier()
+                elif isinstance(value, str) and value.strip().startswith("#"):
+                    source_value = _parse_color(value)
+                elif isinstance(value, (list, tuple, dict)):
+                    source_value = _parse_color(value)
+                else:
+                    raise ActionError("set_fill_channel 的 value 必须是颜色或 resource。")
+                node.set_source(channel_arg, source_value)
+                results.append({"action": kind, "target": node.get_name(), "channel": str(action["channel"]),
+                                "value": value, "api": "substance_painter.layerstack.FillLayerNode.set_source"})
 
             elif kind == "set_source_parameters":
                 node = created[-1] if created else selected_nodes()[0]
@@ -490,10 +549,14 @@ def execute_plan(plan: dict) -> dict:
                 if hasattr(node, "get_material_source"):
                     try:
                         source = node.get_material_source()
-                    except Exception as exc:
-                        raise ActionError(
-                            "当前节点不在多通道 Material 模式，无法验证 Substance 参数。"
-                        ) from exc
+                    except Exception:
+                        source = None
+                    if source is None and hasattr(node, "get_source"):
+                        channel_name = str(action.get("channel") or "BaseColor")
+                        channel = getattr(sp.textureset.ChannelType, channel_name)
+                        source = node.get_source(channel if getattr(node, "source_mode", None) is not None else None)
+                    if source is None or not hasattr(source, "get_parameters"):
+                        raise ActionError("当前节点没有可验证的参数源。")
                     actual = source.get_parameters() if source else {}
                 elif hasattr(node, "get_parameters"):
                     actual = node.get_parameters()
