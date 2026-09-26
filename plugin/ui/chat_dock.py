@@ -334,6 +334,13 @@ class ChatDock(QtWidgets.QWidget):
         self._append("AI 修正计划", text)
         plan = self._parse_plan_response(text)
         if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
+            try:
+                plan = validate_plan(plan)
+            except Exception as exc:
+                self._last_plan = None
+                self.status.setText("✗ AI 修正计划未通过安全验证")
+                self._append("修正计划验证失败", str(exc))
+                return
             self._last_plan = plan
             self._show_plan_preview(plan)
             self.status.setText("✓ 已根据实际结果生成修正计划，请检查后执行")
@@ -366,8 +373,11 @@ class ChatDock(QtWidgets.QWidget):
         model = self.model.currentText().strip()
         base_url = self.base_url.text().strip()
 
-        if not key or not model:
-            self.status.setText("✗ 请先设置 API Key 和模型")
+        if not model:
+            self.status.setText("✗ 请先设置模型")
+            return
+        if not key and self.provider.currentData() != "openai_compatible":
+            self.status.setText("✗ 请先设置 API Key")
             return
 
         self._set_busy(True)
