@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import html
 import json
+import mimetypes
 
 from core.actions import execute_plan, validate_plan
 from core.ai_client import PROVIDERS, chat
@@ -25,14 +27,6 @@ SYSTEM_PROMPT = """你是 SP AI Assistant，运行在 Adobe Substance 3D Painter
 HIGH_IMPACT_ACTIONS = {
     "delete_selected",
     "export_textures",
-    "rename_selected",
-    "set_opacity",
-    "set_fill_property",
-    "set_source_parameters",
-    "set_effect_parameters",
-    "set_active_channels",
-    "set_projection_mode",
-    "set_projection_scale",
 }
 
 
@@ -64,6 +58,7 @@ class ChatDock(QtWidgets.QWidget):
         self._pending_request = None
         self._last_plan = None
         self._last_execution = None
+        self._attachments = []
         self._build_ui(version_text)
         self._load_provider()
 
@@ -128,7 +123,7 @@ class ChatDock(QtWidgets.QWidget):
         self.execution_mode.addItem("仅生成计划", "plan")
         self.execution_mode.addItem("每次确认", "confirm")
         self.execution_mode.addItem("低风险自动执行", "auto")
-        self.execution_mode.setCurrentIndex(1)
+        self.execution_mode.setCurrentIndex(2)
         self.execution_mode.setToolTip(
             "仅生成计划：只生成计划，不执行。\n"
             "每次确认：每个计划执行前都确认。\n"
@@ -178,7 +173,8 @@ class ChatDock(QtWidgets.QWidget):
         bottom.setSpacing(6)
         self.attach = QtWidgets.QPushButton("+")
         self.attach.setFixedWidth(34)
-        self.attach.setToolTip("为后续版本预留：添加参考图/资源")
+        self.attach.setToolTip("添加参考图、材质图或其他图片，让 AI 分析后参与制作")
+        self.attach.clicked.connect(self._attach_file)
         bottom.addWidget(self.attach)
 
         self.input = QtWidgets.QLineEdit()
@@ -187,9 +183,9 @@ class ChatDock(QtWidgets.QWidget):
         bottom.addWidget(self.input, 1)
 
         self.bottom_mode = QtWidgets.QComboBox()
+        self.bottom_mode.addItem("自动执行", "auto")
         self.bottom_mode.addItem("确认执行", "confirm")
         self.bottom_mode.addItem("仅计划", "plan")
-        self.bottom_mode.addItem("低风险自动", "auto")
         self.bottom_mode.setCurrentIndex(0)
         self.bottom_mode.setToolTip("与执行模式同步")
         bottom.addWidget(self.bottom_mode)
@@ -426,6 +422,7 @@ class ChatDock(QtWidgets.QWidget):
 
     def _clear(self):
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self._attachments.clear()
         self._last_plan = None
         self._last_execution = None
         self.plan_preview.clear()
@@ -481,6 +478,33 @@ class ChatDock(QtWidgets.QWidget):
         self.status.setText("✓ API 连接成功" if state == "ok" else "✗ API 连接失败")
         self._append("连接测试" if state == "ok" else "连接错误", text)
 
+    def _attach_file(self):
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self,
+            "添加 AI 参考图片",
+            "",
+            "图片 (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff);;所有文件 (*.*)",
+        )
+        if not paths:
+            return
+        added = 0
+        names = []
+        for path in paths[:4]:
+            try:
+                with open(path, "rb") as handle:
+                    encoded = base64.b64encode(handle.read()).decode("ascii")
+                mime = mimetypes.guess_type(path)[0] or "image/png"
+                self._attachments.append({
+                    "name": path.replace("\\", "/").split("/")[-1],
+                    "data_url": "data:" + mime + ";base64," + encoded,
+                })
+                names.append(self._attachments[-1]["name"])
+                added += 1
+            except Exception as exc:
+                self._append("附件错误", str(exc))
+        if added:
+            self.status.setText("✓ 已添加参考图：" + ", ".join(names))
+
     def _send(self):
         text = self.input.text().strip()
         if not text or self._thread is not None:
@@ -495,7 +519,18 @@ class ChatDock(QtWidgets.QWidget):
             context = json.dumps({"context_error": str(exc)}, ensure_ascii=False)
 
         enriched = "当前 Painter 上下文：\n" + context + "\n\n用户请求：\n" + text
-        self._messages.append({"role": "user", "content": enriched})
+        if self._attachments:
+            content = [{"type": "text", "text": enriched}]
+            for item in self._attachments:
+                content.append({
+                    "type": "image_url",
+                    "data_url": item["data_url"],
+                    "url": item["data_url"],
+                })
+            self._messages.append({"role": "user", "content": content})
+            self._attachments.clear()
+        else:
+            self._messages.append({"role": "user", "content": enriched})
         self._append("你", text)
         self._start_request(list(self._messages), self._done)
 
