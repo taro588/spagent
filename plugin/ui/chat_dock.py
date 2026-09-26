@@ -800,5 +800,5 @@ class ChatDock(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, callback))
 
 
-def build_chat_dock(version_text="0.3.0"):
+def build_chat_dock(version_text="0.3.5"):
     return ChatDock(version_text)
