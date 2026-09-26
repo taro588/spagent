@@ -308,11 +308,15 @@ end;
 
 function VerifyInstall(): Boolean;
 var
-  ManifestPath: String;
+  ManifestPath, CoreDir, UiDir: String;
 begin
   ManifestPath := ExpandConstant('{app}\manifest.json');
+  CoreDir := ExpandConstant('{app}\core');
+  UiDir := ExpandConstant('{app}\ui');
   Result := FileExists(ExpandConstant('{app}\sp_ai_assistant.py')) and
-           FileExists(ManifestPath);
+           FileExists(ManifestPath) and
+           DirExists(CoreDir) and
+           DirExists(UiDir);
 end;
 
 function InitializeUninstall(): Boolean;
