@@ -74,6 +74,7 @@ SUPPORTED_ACTIONS = {
     "apply_base_material",
     "auto_material_workflow",
     "ensure_texture_set_ready",
+    "ensure_material_layer",
 }
 
 
@@ -303,6 +304,12 @@ def _expand_workflow_actions(plan: dict) -> dict:
                 expanded.append({"action": "texture_set_resolution", "resolution": action["resolution"]})
             if action.get("bake", False):
                 expanded.append({"action": "bake_start"})
+        elif kind == "ensure_material_layer":
+            expanded.append({"action": "create_fill_layer", "name": _name(action.get("name"), "AI Material Layer")})
+            material = action.get("material") or action.get("resource")
+            if material:
+                expanded.append({"action": "set_fill_material", "name": material})
+            expanded.append({"action": "select_last_created"})
         else:
             expanded.append(action)
     return {"actions": expanded}
@@ -372,6 +379,7 @@ def validate_plan(plan: dict) -> dict:
         "apply_base_material": (),
         "auto_material_workflow": (),
         "ensure_texture_set_ready": (),
+        "ensure_material_layer": (),
     }
     for index, action in enumerate(actions, 1):
         if not isinstance(action, dict):
