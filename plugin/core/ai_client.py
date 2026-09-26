@@ -85,12 +85,12 @@ PAINTER_ACTION_TOOL = {
                             "path": {"type": "string"}
                         },
                         "required": ["action"],
-                        "additionalProperties": true
+                        "additionalProperties": True
                     }
                 }
             },
             "required": ["actions"],
-            "additionalProperties": false
+            "additionalProperties": False
         }
     }
 }
