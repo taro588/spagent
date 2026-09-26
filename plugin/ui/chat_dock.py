@@ -53,7 +53,7 @@ class _Worker(QtCore.QObject):
 
 
 class ChatDock(QtWidgets.QWidget):
-    def __init__(self, version_text="0.4.2"):
+    def __init__(self, version_text="0.4.3"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
@@ -126,7 +126,7 @@ class ChatDock(QtWidgets.QWidget):
 
         workflow_group = QtWidgets.QGroupBox("材质工作流选项")
         workflow_layout = QtWidgets.QGridLayout(workflow_group)
-        self.web_search_enabled = QtWidgets.QCheckBox("允许联网搜索")
+        self.web_search_enabled = QtWidgets.QCheckBox("联网搜索（官方工具）")
         self.web_search_enabled.setToolTip("开启后先搜索公开网页，再把结果交给当前模型；不会替代原模型。")
         workflow_layout.addWidget(self.web_search_enabled, 3, 0, 1, 2)
         self.workflow_bake = QtWidgets.QCheckBox("烘焙 Mesh Maps")
@@ -770,14 +770,10 @@ class ChatDock(QtWidgets.QWidget):
         except Exception as exc:
             context = json.dumps({"context_error": str(exc)}, ensure_ascii=False)
 
-        search_context = ""
+        search_hint = ""
         if self.web_search_enabled.isChecked():
-            try:
-                search_result = web_search(text, 6)
-                search_context = "\n\n联网搜索结果（仅供模型参考）：\n" + json.dumps(search_result, ensure_ascii=False, indent=2)
-            except Exception as exc:
-                search_context = "\n\n联网搜索失败：\n" + str(exc)
-        enriched = "当前 Painter 上下文：\n" + context + search_context + "\n\n用户请求：\n" + text
+            search_hint = "\n\n[联网能力已启用：请按需使用当前模型提供商的官方 Web Search 工具；不要用搜索结果替代模型自身推理。]"
+        enriched = "当前 Painter 上下文：\n" + context + search_hint + "\n\n用户请求：\n" + text
         if self._attachments:
             content = [{"type": "text", "text": enriched}]
             for item in self._attachments:
@@ -893,5 +889,5 @@ class ChatDock(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, callback))
 
 
-def build_chat_dock(version_text="0.4.2"):
+def build_chat_dock(version_text="0.4.3"):
     return ChatDock(version_text)
