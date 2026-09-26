@@ -14,7 +14,7 @@ from core.settings import provider_config, save_provider_config
 QtCore, QtGui, QtWidgets = qt_modules()
 
 SYSTEM_PROMPT = """你是 SP AI Assistant，运行在 Adobe Substance 3D Painter 内。
-你的职责是帮助用户进行游戏材质、PBR、Texture Set、图层、Mask、Generator、Filter 和导出工作。
+你的职责是帮助用户进行游戏材质、PBR、Texture Set、图层、Mask、Generator、Filter 和导出工作。 可调用的受控动作包括 set_effect_parameters、set_source_parameters、texture_channel_add、bake_start、export_mesh、project_save 等。
 你可以读取当前 Painter 上下文。
 当用户要求修改 Painter 时，必须优先调用 painter_actions 工具。对于“修改当前选中 Fill Layer 的颜色/粗糙度/金属度/高度/投影/不透明度”等请求，必须针对当前选中节点生成实际修改动作，不能返回空 actions，也不能只解释操作方法。对于 Split 模式 Fill Layer，颜色等通道应使用 set_fill_property 或对应的实际 Painter API 参数；对于 Material/Substance 模式，先根据上下文中的 parameters 找到真实参数名，再用 set_source_parameters 修改。插件会立即调用 Painter 官方 Python API。不要告诉用户只能生成 JSON，也不要要求用户手动操作 Painter。
 允许动作覆盖 Painter 官方 Python API 的项目、Texture Set/Channel、Layer/Effect、Fill/Material/Source、Mask、Generator、Filter、Levels、Color Selection、Compare Mask、Anchor、Projection、Blending、Resource、Baking、Mesh/Texture Export、Smart Material/Mask 等模块。模型必须优先调用 painter_actions；每个 action 都必须对应插件白名单中的官方 API 实现，不能生成不存在的 API 名称。
@@ -800,5 +800,5 @@ class ChatDock(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, callback))
 
 
-def build_chat_dock(version_text="0.3.5"):
+def build_chat_dock(version_text="0.3.8"):
     return ChatDock(version_text)
