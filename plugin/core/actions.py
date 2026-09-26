@@ -340,6 +340,10 @@ def execute_plan(plan: dict) -> dict:
                 unknown = [name for name in values if not hasattr(current, name)]
                 if unknown:
                     raise ActionError("未知参数: " + ", ".join(unknown))
+                values = {
+                    str(name): _normalize_parameter_value(value)
+                    for name, value in values.items()
+                }
                 for name, value in values.items():
                     try:
                         setattr(current, name, value)
