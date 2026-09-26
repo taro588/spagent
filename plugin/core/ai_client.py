@@ -8,6 +8,8 @@ import urllib.error
 import urllib.request
 
 
+AI_CLIENT_BUILD = "0.3.3-fix1"
+
 PROVIDERS = {
     "OpenAI": {
         "id": "openai",
@@ -208,7 +210,13 @@ def _openai_responses(messages, model, api_key, base_url):
 
 
 def _openai_compatible(messages, model, api_key, base_url):
-    payload = {"model": model, "messages": [{"role": m.get("role"), "content": _openai_message_content(m.get("content"))} for m in messages]}
+    normalized_messages = []
+    for message in messages:
+        normalized_messages.append({
+            "role": message.get("role"),
+            "content": _openai_message_content(message.get("content")),
+        })
+    payload = {"model": model, "messages": normalized_messages}
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
