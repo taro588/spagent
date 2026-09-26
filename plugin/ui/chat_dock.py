@@ -199,6 +199,10 @@ class ChatDock(QtWidgets.QWidget):
         self.bottom_mode.setToolTip("与执行模式同步")
         bottom.addWidget(self.bottom_mode)
 
+        self.attachment_preview = QtWidgets.QHBoxLayout()
+        self.attachment_preview.setSpacing(6)
+        root.addLayout(self.attachment_preview)
+
         self.send = QtWidgets.QPushButton("↑")
         self.send.setFixedSize(38, 34)
         self.send.setToolTip("发送")
@@ -207,6 +211,7 @@ class ChatDock(QtWidgets.QWidget):
         root.addLayout(bottom)
 
         self.execution_mode.currentIndexChanged.connect(self._sync_bottom_mode)
+        self.permission_mode.currentIndexChanged.connect(self._sync_permission_mode)
         self.bottom_mode.currentIndexChanged.connect(self._sync_execution_mode)
 
         self.provider.currentTextChanged.connect(self._load_provider)
@@ -576,6 +581,39 @@ class ChatDock(QtWidgets.QWidget):
         self.status.setText("✓ API 连接成功" if state == "ok" else "✗ API 连接失败")
         self._append("连接测试" if state == "ok" else "连接错误", text)
 
+    def _refresh_attachment_preview(self):
+        while self.attachment_preview.count():
+            item = self.attachment_preview.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        for index, item in enumerate(self._attachments):
+            frame = QtWidgets.QFrame()
+            frame.setFixedSize(92, 92)
+            layout = QtWidgets.QVBoxLayout(frame)
+            layout.setContentsMargins(4, 4, 4, 4)
+            label = QtWidgets.QLabel()
+            label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            raw = str(item.get('data_url', ''))
+            try:
+                image = QtGui.QImage()
+                image.loadFromData(base64.b64decode(raw.split(',', 1)[1]))
+                pixmap = QtGui.QPixmap.fromImage(image).scaled(78, 62, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
+                label.setPixmap(pixmap)
+            except Exception:
+                label.setText('图片')
+            layout.addWidget(label)
+            close = QtWidgets.QPushButton('×')
+            close.setFixedSize(20, 20)
+            close.clicked.connect(lambda _checked=False, i=index: self._remove_attachment(i))
+            layout.addWidget(close, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+            self.attachment_preview.addWidget(frame)
+        self.attachment_preview.addStretch()
+
+    def _remove_attachment(self, index):
+        if 0 <= index < len(self._attachments):
+            self._attachments.pop(index)
+            self._refresh_attachment_preview()
     def _show_attach_menu(self):
         menu = QtWidgets.QMenu(self)
         paste = menu.addAction("从剪贴板添加图片")
@@ -604,6 +642,7 @@ class ChatDock(QtWidgets.QWidget):
         encoded = base64.b64encode(bytes(data)).decode("ascii")
         data_url = "data:image/png;base64," + encoded
         self._attachments.append({"name": "clipboard.png", "data_url": data_url})
+        self._refresh_attachment_preview()
         self.status.setText("✓ 已从剪贴板添加参考图")
         self._append("你 · 参考图", "已从剪贴板添加", [data_url])
 
@@ -632,6 +671,7 @@ class ChatDock(QtWidgets.QWidget):
             except Exception as exc:
                 self._append("附件错误", str(exc))
         if added:
+            self._refresh_attachment_preview()
             self.status.setText("✓ 已添加参考图：" + ", ".join(names))
             self._append("你 · 参考图", "已添加到本轮请求", [item["data_url"] for item in self._attachments[-added:]])
 
@@ -676,6 +716,7 @@ class ChatDock(QtWidgets.QWidget):
                 })
             self._messages.append({"role": "user", "content": content})
             self._attachments.clear()
+            self._refresh_attachment_preview()
         else:
             self._messages.append({"role": "user", "content": enriched})
         self._append("你", text)
