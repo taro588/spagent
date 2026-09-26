@@ -67,13 +67,40 @@ class ChatDock(QtWidgets.QWidget):
         self._load_provider()
 
     def _build_ui(self, version_text):
+        self.setStyleSheet("""
+            QWidget#SPAI_Assistant_Dock { background: #111214; color: #f2f3f5; }
+            QLabel { color: #d9dce1; }
+            QLineEdit, QPlainTextEdit, QComboBox {
+                background: #181a1f; color: #f5f6f7;
+                border: 1px solid #30343b; border-radius: 10px; padding: 8px;
+            }
+            QPushButton {
+                background: #202329; color: #f5f6f7;
+                border: 1px solid #343941; border-radius: 9px; padding: 7px 12px;
+            }
+            QPushButton:hover { background: #292d34; }
+            QComboBox { min-height: 28px; }
+        """)
         root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
 
         header = QtWidgets.QHBoxLayout()
-        header.addWidget(QtWidgets.QLabel("<b>SP AI Assistant</b>"))
+        title = QtWidgets.QLabel("<b>SP AI Assistant</b>")
+        title.setStyleSheet("font-size: 16px;")
+        header.addWidget(title)
         header.addStretch()
-        header.addWidget(QtWidgets.QLabel(version_text))
+        self.model_badge = QtWidgets.QComboBox()
+        self.model_badge.setMinimumWidth(180)
+        header.addWidget(self.model_badge)
+        self.settings_toggle = QtWidgets.QPushButton("⚙")
+        self.settings_toggle.setFixedWidth(36)
+        header.addWidget(self.settings_toggle)
         root.addLayout(header)
+
+        self.chat_hint = QtWidgets.QLabel("Substance 3D Painter · AI 材质助手")
+        self.chat_hint.setStyleSheet("color:#8f96a3; padding-bottom:4px;")
+        root.addWidget(self.chat_hint)
 
         settings = QtWidgets.QGridLayout()
         settings.addWidget(QtWidgets.QLabel("模型提供商"), 0, 0)
@@ -107,7 +134,13 @@ class ChatDock(QtWidgets.QWidget):
             "低风险自动执行：仅自动执行低风险动作；高影响动作仍需确认。"
         )
         settings.addWidget(self.execution_mode, 4, 1)
-        root.addLayout(settings)
+        self.settings_panel = QtWidgets.QWidget()
+        self.settings_panel.setLayout(settings)
+        self.settings_panel.setVisible(False)
+        root.addWidget(self.settings_panel)
+        self.settings_toggle.clicked.connect(
+            lambda: self.settings_panel.setVisible(not self.settings_panel.isVisible())
+        )
 
         buttons = QtWidgets.QHBoxLayout()
         for label, slot in (
@@ -135,6 +168,9 @@ class ChatDock(QtWidgets.QWidget):
 
         self.history = QtWidgets.QPlainTextEdit()
         self.history.setReadOnly(True)
+        self.history.setStyleSheet(
+            "QPlainTextEdit { background:#111214; border:none; padding:8px; font-size:13px; }"
+        )
         root.addWidget(self.history, 1)
 
         bottom = QtWidgets.QHBoxLayout()
@@ -149,6 +185,7 @@ class ChatDock(QtWidgets.QWidget):
         root.addLayout(bottom)
 
         self.provider.currentTextChanged.connect(self._load_provider)
+        self.model_badge.currentTextChanged.connect(self._sync_model_badge)
 
     def _load_provider(self):
         provider = self.provider.currentText()
@@ -164,7 +201,16 @@ class ChatDock(QtWidgets.QWidget):
         self.model.blockSignals(False)
         self.base_url.setText(config["base_url"] or info["base_url"])
         self.key.setText(config["api_key"])
+        self.model_badge.blockSignals(True)
+        self.model_badge.clear()
+        self.model_badge.addItems(info["models"])
+        self.model_badge.setCurrentText(self.model.currentText())
+        self.model_badge.blockSignals(False)
         self.status.setText("已读取本机配置" if config["api_key"] else "未配置 API Key")
+
+    def _sync_model_badge(self, model_name):
+        if model_name:
+            self.model.setCurrentText(model_name)
 
     def _save(self):
         info = PROVIDERS[self.provider.currentText()]
