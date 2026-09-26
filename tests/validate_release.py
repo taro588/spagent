@@ -243,3 +243,18 @@ def test_chat_ui_is_dialog_only_and_no_plan_preview():
     assert "执行上一次计划" not in dock
     assert "_attach_file" in dock
     assert "image_url" in dock
+
+def test_chat_bubbles_and_clipboard_input():
+    text = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+    assert "QPlainTextEdit" in text
+    assert "eventFilter" in text
+    assert "_add_clipboard_image" in text
+    assert "_show_attach_menu" in text
+    assert 'startswith("你")' in text
+    assert "background:{bubble_bg}" in text
+
+
+def test_official_api_diagnostic():
+    text = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+    assert "_official_api_test" in text
+    assert "substance_painter.layerstack.insert_fill" in text
