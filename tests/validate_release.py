@@ -63,6 +63,8 @@ def test_installer_detection_logic():
     assert "SelectPainterExe" in iss
     assert "GetOpenFileName" in iss
     assert "DisableDirPage=yes" in iss
+    assert "UninstallDisplayName={#MyAppName}" in iss
+    assert "WizardStyle=modern" in iss
     assert "GetModernPainterRoot()" in iss
     assert "GetLegacyPainterRoot()" in iss
     assert "InitializeUninstall" in iss
