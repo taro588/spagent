@@ -98,6 +98,9 @@ def test_ai_modules():
     assert "/v1/messages" in client
     assert "generativelanguage.googleapis.com" in client
     assert "_extract_openai_responses_text" in client
+    assert "max_attempts = 3" in client
+    assert "HTTP 429" not in client
+    assert "time.sleep" in client
     assert "_extract_openai_compatible_content" in client
     assert ":generateContent" in client
     assert "CryptProtectData" in settings
@@ -105,6 +108,9 @@ def test_ai_modules():
     assert "测试连接" in dock
     assert "AIProvider" not in client
     assert "PySide2" in qt and "PySide6" in qt
+    self_check = (ROOT / "plugin" / "core" / "self_check.py").read_text(encoding="utf-8")
+    assert '"plugin_path": "not_checked"' in self_check
+    assert "sp_ai_assistant.py" in self_check
 
 
 def test_context_and_actions():
