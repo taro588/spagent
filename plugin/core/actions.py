@@ -592,7 +592,10 @@ def execute_plan(plan: dict) -> dict:
             elif kind == "set_source_resource":
                 node = created[-1] if created else selected_nodes()[0]
                 channel = getattr(sp.textureset.ChannelType, str(action["channel"]))
-                resource = _resource(action.get("usage", "base_material"), action["resource"])
+                matches = sp.resource.search(str(action["resource"]))
+                if not matches:
+                    raise ActionError("找不到资源: " + str(action["resource"]))
+                resource = matches[0]
                 node.set_source(channel, resource.identifier())
                 results.append({"action": kind, "target": node.get_name(), "channel": str(action["channel"]), "resource": resource.gui_name()})
 
@@ -616,8 +619,12 @@ def execute_plan(plan: dict) -> dict:
                 if not node.has_blending():
                     raise ActionError("目标节点没有 Blending Mode。")
                 mode = getattr(sp.layerstack.BlendingMode, str(action["mode"]))
-                node.set_blending_mode(mode)
-                results.append({"action": kind, "target": node.get_name(), "mode": str(action["mode"])})
+                channel_name = action.get("channel")
+                channel = getattr(sp.textureset.ChannelType, str(channel_name)) if channel_name else None
+                if not node.is_in_mask_stack() and channel is None:
+                    raise ActionError("普通图层设置 Blending Mode 时必须提供 channel。")
+                node.set_blending_mode(mode, channel)
+                results.append({"action": kind, "target": node.get_name(), "mode": str(action["mode"]), "channel": channel_name})
 
             elif kind == "set_visibility":
                 node = created[-1] if created else selected_nodes()[0]
@@ -746,7 +753,8 @@ def execute_plan(plan: dict) -> dict:
                 ]})
 
             elif kind == "bake_highpoly":
-                from PySide2 import QtCore
+                from core.qt_compat import qt_modules
+                QtCore, _QtGui, _QtWidgets = qt_modules()
                 highpoly = QtCore.QUrl.fromLocalFile(str(action["path"])).toString()
                 params = sp.baking.BakingParameters.from_texture_set(_active_stack().material())
                 common = params.common()
@@ -758,8 +766,10 @@ def execute_plan(plan: dict) -> dict:
                 results.append({"action": kind, "status": "started"})
 
             elif kind == "export_mesh":
-                result = sp.export.export_mesh(str(action["path"]))
-                results.append({"action": kind, "path": str(action["path"]), "result": _serializable(result)})
+                option_name = str(action.get("option") or "BaseMesh")
+                option = getattr(sp.export.MeshExportOption, option_name)
+                result = sp.export.export_mesh(str(action["path"]), option)
+                results.append({"action": kind, "path": str(action["path"]), "option": option_name, "result": _serializable(result)})
 
             elif kind == "save_smart_material":
                 node = created[-1] if created else selected_nodes()[0]
