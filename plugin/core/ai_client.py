@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import time
 import urllib.error
 import urllib.request
@@ -119,7 +121,7 @@ def _extract_openai_responses_text(data):
 def _openai_responses(messages, model, api_key, base_url):
     data = _post(
         base_url.rstrip("/") + "/responses",
-        {"model": model, "input": messages},
+        {"model": model, "input": [{"role": m.get("role"), "content": _openai_message_content(m.get("content"), response_api=True)} for m in messages]},
         {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
     )
     text = _extract_openai_responses_text(data)
@@ -129,7 +131,7 @@ def _openai_responses(messages, model, api_key, base_url):
 
 
 def _openai_compatible(messages, model, api_key, base_url):
-    payload = {"model": model, "messages": messages}
+    payload = {"model": model, "messages": [{"role": m.get("role"), "content": _openai_message_content(m.get("content"))} for m in messages]}
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
@@ -154,7 +156,7 @@ def _anthropic(messages, model, api_key, base_url):
     payload = {
         "model": model,
         "max_tokens": 4096,
-        "messages": user_messages,
+        "messages": [{"role": m.get("role"), "content": _anthropic_content(m.get("content"))} for m in user_messages],
     }
     if system_parts:
         payload["system"] = "\n".join(system_parts).strip()
@@ -188,7 +190,7 @@ def _gemini(messages, model, api_key, base_url):
         else:
             contents.append({
                 "role": "model" if role == "assistant" else "user",
-                "parts": [{"text": content}],
+                "parts": _gemini_parts(content),
             })
     payload = {"contents": contents}
     if system_parts:
