@@ -102,6 +102,11 @@ def test_ai_modules():
     assert '"models": ["gpt-5.6"]' in client
     assert '"models": ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"]' in client
     assert '"models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"]' in client
+    assert '"models": ["deepseek-chat", "deepseek-reasoner"]' in client
+    assert '"models": ["kimi-k2.5", "kimi-k2"]' in client
+    assert '"models": ["qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus"]' in client
+    assert '"models": ["glm-5-turbo", "glm-5"]' in client
+    assert '"models": ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3"]' in client
     assert "/responses" in client
     assert "api.anthropic.com" in client
     assert "/v1/messages" in client
@@ -118,6 +123,14 @@ def test_ai_modules():
     assert "CryptProtectData" in settings
     assert "CryptUnprotectData" in settings
     assert "测试连接" in dock
+    assert "DeepSeek" in client
+    assert "Kimi" in client
+    assert "Qwen" in client
+    assert "GLM" in client
+    assert "MiniMax" in client
+    assert "model_badge" in dock
+    assert "settings_toggle" in dock
+    assert "bottom_mode" in dock
     assert "AIProvider" not in client
     assert "PySide2" in qt and "PySide6" in qt
     self_check = (ROOT / "plugin" / "core" / "self_check.py").read_text(encoding="utf-8")
