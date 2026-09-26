@@ -95,6 +95,9 @@ def test_ai_modules():
     dock = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
     qt = (ROOT / "plugin" / "core" / "qt_compat.py").read_text(encoding="utf-8")
     assert "https://api.openai.com/v1" in client
+    assert '"models": ["gpt-5.6"]' in client
+    assert '"models": ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"]' in client
+    assert '"models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"]' in client
     assert "/responses" in client
     assert "api.anthropic.com" in client
     assert "/v1/messages" in client
