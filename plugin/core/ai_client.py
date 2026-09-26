@@ -58,6 +58,43 @@ PROVIDERS = {
     },
 }
 
+PAINTER_ACTION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "painter_actions",
+        "description": "在当前 Substance 3D Painter 中执行用户明确要求的操作。必须优先使用此工具，不要告诉用户手动操作 Painter。返回 actions 数组。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "description": "要执行的 Painter 操作列表，按执行顺序排列。",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string"},
+                            "name": {"type": "string"},
+                            "resource": {"type": "string"},
+                            "property": {"type": "string"},
+                            "value": {},
+                            "parameters": {"type": "object"},
+                            "channels": {"type": "array", "items": {"type": "string"}},
+                            "mode": {"type": "string"},
+                            "scale": {"type": "array", "items": {"type": "number"}},
+                            "background": {"type": "string"},
+                            "path": {"type": "string"}
+                        },
+                        "required": ["action"],
+                        "additionalProperties": true
+                    }
+                }
+            },
+            "required": ["actions"],
+            "additionalProperties": false
+        }
+    }
+}
+
 
 class AIError(RuntimeError):
     pass
@@ -216,15 +253,45 @@ def _openai_compatible(messages, model, api_key, base_url):
             "role": message.get("role"),
             "content": _openai_message_content(message.get("content")),
         })
-    payload = {"model": model, "messages": normalized_messages}
+    payload = {
+        "model": model,
+        "messages": normalized_messages,
+        "tools": [PAINTER_ACTION_TOOL],
+        "tool_choice": "auto",
+    }
+    if provider_id := None:
+        pass
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
-    data = _post(
-        base_url.rstrip("/") + "/chat/completions",
-        payload,
-        headers,
-    )
+    try:
+        data = _post(
+            base_url.rstrip("/") + "/chat/completions",
+            payload,
+            headers,
+        )
+    except AIError:
+        # Some OpenAI-compatible endpoints do not implement tools.
+        payload.pop("tools", None)
+        payload.pop("tool_choice", None)
+        data = _post(
+            base_url.rstrip("/") + "/chat/completions",
+            payload,
+            headers,
+        )
+    choices = data.get("choices") or []
+    message = (choices[0].get("message") if choices else {}) or {}
+    tool_calls = message.get("tool_calls") or []
+    for call in tool_calls:
+        fn = call.get("function") or {}
+        if fn.get("name") == "painter_actions":
+            arguments = fn.get("arguments") or "{}"
+            try:
+                plan = json.loads(arguments)
+            except json.JSONDecodeError as exc:
+                raise AIError("Painter 工具调用参数不是有效 JSON") from exc
+            if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
+                return json.dumps(plan, ensure_ascii=False)
     text = _extract_openai_compatible_content(data)
     if not text:
         raise AIError("兼容 OpenAI 的服务返回成功，但没有找到文本输出")
