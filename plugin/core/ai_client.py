@@ -10,17 +10,17 @@ PROVIDERS = {
     "OpenAI": {
         "id": "openai",
         "base_url": "https://api.openai.com/v1",
-        "models": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+        "models": ["gpt-5.6"],
     },
     "Anthropic": {
         "id": "anthropic",
         "base_url": "https://api.anthropic.com",
-        "models": ["claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"],
+        "models": ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
     },
     "Google Gemini": {
         "id": "gemini",
         "base_url": "https://generativelanguage.googleapis.com",
-        "models": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite"],
+        "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
     },
     "OpenAI Compatible": {
         "id": "openai_compatible",
