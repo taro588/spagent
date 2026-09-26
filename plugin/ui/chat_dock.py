@@ -544,6 +544,37 @@ class ChatDock(QtWidgets.QWidget):
         self.status.setText("✓ API 连接成功" if state == "ok" else "✗ API 连接失败")
         self._append("连接测试" if state == "ok" else "连接错误", text)
 
+    def _show_attach_menu(self):
+        menu = QtWidgets.QMenu(self)
+        paste = menu.addAction("从剪贴板添加图片")
+        paste.setEnabled(self._clipboard_has_image())
+        choose = menu.addAction("从文件选择图片…")
+        action = menu.exec(self.attach.mapToGlobal(self.attach.rect().bottomLeft()))
+        if action == paste:
+            self._add_clipboard_image()
+        elif action == choose:
+            self._attach_file()
+
+    def _clipboard_has_image(self):
+        mime = QtWidgets.QApplication.clipboard().mimeData()
+        return bool(mime and mime.hasImage())
+
+    def _add_clipboard_image(self):
+        image = QtWidgets.QApplication.clipboard().image()
+        if image.isNull():
+            self._append("附件错误", "剪贴板中没有可用图片。")
+            return
+        data = QtCore.QByteArray()
+        buffer = QtCore.QBuffer(data)
+        buffer.open(QtCore.QIODevice.WriteOnly)
+        image.save(buffer, "PNG")
+        buffer.close()
+        encoded = base64.b64encode(bytes(data)).decode("ascii")
+        data_url = "data:image/png;base64," + encoded
+        self._attachments.append({"name": "clipboard.png", "data_url": data_url})
+        self.status.setText("✓ 已从剪贴板添加参考图")
+        self._append("你 · 参考图", "已从剪贴板添加", [data_url])
+
     def _attach_file(self):
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self,
@@ -571,6 +602,7 @@ class ChatDock(QtWidgets.QWidget):
         if added:
             self.status.setText("✓ 已添加参考图：" + ", ".join(names))
             self._append("你 · 参考图", "已添加到本轮请求", [item["data_url"] for item in self._attachments[-added:]])
+
 
     def _send(self):
         text = self.input.toPlainText().strip()
