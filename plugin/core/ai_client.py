@@ -22,6 +22,26 @@ PROVIDERS = {
         "base_url": "https://generativelanguage.googleapis.com",
         "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
     },
+    "DeepSeek": {
+        "id": "deepseek",
+        "base_url": "https://api.deepseek.com",
+        "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
+    },
+    "Kimi": {
+        "id": "kimi",
+        "base_url": "https://api.moonshot.cn/v1",
+        "models": ["k3", "kimi-k2.7-code", "kimi-k2.6"],
+    },
+    "Qwen": {
+        "id": "qwen",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "models": ["qwen3.8-max", "qwen3.7-max", "qwen3.6-flash"],
+    },
+    "MiniMax": {
+        "id": "minimax",
+        "base_url": "https://api.minimaxi.com/v1",
+        "models": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
+    },
     "OpenAI Compatible": {
         "id": "openai_compatible",
         "base_url": "http://localhost:1234/v1",
@@ -192,13 +212,13 @@ def chat(provider_name: str, messages: list[dict], model: str, api_key: str, bas
         raise AIError("未知 AI 提供商")
     if not model:
         raise AIError("尚未设置模型")
-    if not api_key and info["id"] != "openai_compatible":
+    if not api_key:
         raise AIError("尚未设置 API Key")
     base = (base_url or info["base_url"]).strip()
     provider_id = info["id"]
     if provider_id == "openai":
         return _openai_responses(messages, model, api_key, base)
-    if provider_id == "openai_compatible":
+    if provider_id in {"openai_compatible", "deepseek", "kimi", "qwen", "minimax"}:
         return _openai_compatible(messages, model, api_key, base)
     if provider_id == "anthropic":
         return _anthropic(messages, model, api_key, base)
