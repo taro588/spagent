@@ -105,16 +105,18 @@ def _openai_responses(messages, model, api_key, base_url):
 
 def _openai_compatible(messages, model, api_key, base_url):
     payload = {"model": model, "messages": messages}
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = "Bearer " + api_key
     data = _post(
         base_url.rstrip("/") + "/chat/completions",
         payload,
-        {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+        headers,
     )
     text = _extract_openai_compatible_content(data)
     if not text:
         raise AIError("兼容 OpenAI 的服务返回成功，但没有找到文本输出")
     return text
-
 
 def _anthropic(messages, model, api_key, base_url):
     system_parts = []
@@ -185,13 +187,13 @@ def _gemini(messages, model, api_key, base_url):
 
 
 def chat(provider_name: str, messages: list[dict], model: str, api_key: str, base_url: str = "") -> str:
-    if not api_key:
-        raise AIError("尚未设置 API Key")
     info = PROVIDERS.get(provider_name)
     if not info:
         raise AIError("未知 AI 提供商")
     if not model:
         raise AIError("尚未设置模型")
+    if not api_key and info["id"] != "openai_compatible":
+        raise AIError("尚未设置 API Key")
     base = (base_url or info["base_url"]).strip()
     provider_id = info["id"]
     if provider_id == "openai":
