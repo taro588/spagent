@@ -270,8 +270,12 @@ def _expand_workflow_actions(plan: dict) -> dict:
                 "roughness": "Roughness", "metallic": "Metallic", "metalness": "Metallic",
                 "height": "Height", "normal": "Normal", "emissive": "Emissive",
             }
-            for key, value in values.items():
-                expanded.append({"action": "set_fill_property", "property": aliases.get(str(key).casefold(), str(key)), "value": value})
+            if action.get("material") or action.get("resource"):
+                for key, value in values.items():
+                    expanded.append({"action": "set_source_parameters", "parameters": {str(key): value}})
+            else:
+                for key, value in values.items():
+                    expanded.append({"action": "set_fill_property", "property": aliases.get(str(key).casefold(), str(key)), "value": value})
             if action.get("smart_mask") or action.get("mask"):
                 expanded.append({"action": "add_smart_mask", "name": action.get("smart_mask") or action.get("mask")})
             if action.get("generator"):
