@@ -12,7 +12,7 @@ from core.self_check import run_self_check
 from ui.chat_dock import ChatDock
 
 _widgets = []
-PLUGIN_VERSION = "0.3.0"
+PLUGIN_VERSION = "0.3.1"
 MIN_PAINTER_VERSION = (7, 2, 0)
 
 
