@@ -819,8 +819,12 @@ def execute_plan(plan: dict) -> dict:
                 results.append({"action": kind, "target": node.get_name(), "uid": effect.uid()})
 
             elif kind == "texture_stack_select":
-                stack = sp.textureset.Stack.from_name(str(action["stack"]))
-                sp.textureset.set_active_stack(stack)
+                requested = str(action["stack"]).strip()
+                if requested.casefold() in {"active", "current"}:
+                    stack = _active_stack()
+                else:
+                    stack = sp.textureset.Stack.from_name(requested)
+                    sp.textureset.set_active_stack(stack)
                 results.append({"action": kind, "stack": stack.name()})
 
             elif kind in {"texture_channel_add", "texture_channel_remove", "texture_channel_edit"}:
