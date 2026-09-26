@@ -275,7 +275,9 @@ def test_agent_tool_calling_and_permissions():
     client = (ROOT / "plugin" / "core" / "ai_client.py").read_text(encoding="utf-8")
     qt = (ROOT / "plugin" / "core" / "qt_compat.py").read_text(encoding="utf-8")
     assert "painter_actions" in client
-    assert '"tools": [PAINTER_ACTION_TOOL]' in client
+    assert "WEB_SEARCH_TOOL" in client
+    assert "def web_search(" in client
+    assert '"tools": [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL]' in client
     assert "tool_calls" in client
     assert "permission_mode" in chat
     assert "allow_high_impact" in chat
