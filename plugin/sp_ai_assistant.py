@@ -7,7 +7,7 @@ import substance_painter
 import substance_painter.ui
 
 _widgets = []
-PLUGIN_VERSION = "0.3.6"
+PLUGIN_VERSION = "0.3.7"
 MIN_PAINTER_VERSION = (7, 2, 0)
 
 
