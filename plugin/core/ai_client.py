@@ -240,7 +240,7 @@ def _openai_responses(messages, model, api_key, base_url):
         "name": "painter_actions",
         "description": PAINTER_ACTION_TOOL["function"]["description"],
         "parameters": PAINTER_ACTION_TOOL["function"]["parameters"],
-        "strict": True,
+        "strict": False,
     }
     payload = {
         "model": model,
