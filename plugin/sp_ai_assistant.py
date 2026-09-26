@@ -137,5 +137,11 @@ def close_plugin():
     _browser_dock = None
 
 
+def reload_plugin():
+    """Painter calls this during plugin reload; rebuild all dependent UI cleanly."""
+    close_plugin()
+    start_plugin()
+
+
 if __name__ == "__main__":
     start_plugin()
