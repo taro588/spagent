@@ -139,6 +139,9 @@ def test_context_and_actions():
     assert "validate_plan" in actions
     assert "_material_source" in actions
     assert "_normalize_parameter_value" in actions
+    assert "isinstance(actual, (list, tuple))" in actions
+    assert "isinstance(actual, dict) and isinstance(expected, dict)" in actions
+    assert "actual_serialized = _serializable(actual)" in actions
     assert "values = {" in actions
     assert "str(name): _normalize_parameter_value(value)" in actions
     assert "set_material_source" in actions
