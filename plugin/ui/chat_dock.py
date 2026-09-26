@@ -142,7 +142,7 @@ class ChatDock(QtWidgets.QWidget):
         workflow_layout.addWidget(QtWidgets.QLabel("分辨率"), 2, 0)
         workflow_layout.addWidget(self.workflow_resolution, 2, 1)
         settings.addWidget(workflow_group, 4, 0, 1, 2)
-        settings.addWidget(QtWidgets.QLabel("执行模式"), 4, 0)
+        settings.addWidget(QtWidgets.QLabel("执行模式"), 5, 0)
         self.execution_mode = QtWidgets.QComboBox()
         self.execution_mode.addItem("仅生成计划", "plan")
         self.execution_mode.addItem("每次确认", "confirm")
@@ -153,20 +153,20 @@ class ChatDock(QtWidgets.QWidget):
             "每次确认：每个计划执行前都确认。\n"
             "低风险自动执行：仅自动执行低风险动作；高影响动作仍需确认。"
         )
-        settings.addWidget(self.execution_mode, 4, 1)
+        settings.addWidget(self.execution_mode, 5, 1)
 
-        settings.addWidget(QtWidgets.QLabel("SP 操作权限"), 5, 0)
+        settings.addWidget(QtWidgets.QLabel("SP 操作权限"), 6, 0)
         self.permission_mode = QtWidgets.QComboBox()
         self.permission_mode.addItem("仅查看", "readonly")
         self.permission_mode.addItem("操作前询问", "confirm")
         self.permission_mode.addItem("自动执行", "auto")
         self.permission_mode.setCurrentIndex(2)
         self.permission_mode.setToolTip("控制 AI 是否可以直接调用 Painter 官方 Python API")
-        settings.addWidget(self.permission_mode, 5, 1)
+        settings.addWidget(self.permission_mode, 6, 1)
 
         self.allow_high_impact = QtWidgets.QCheckBox("允许自动执行删除/导出等高影响操作")
         self.allow_high_impact.setChecked(False)
-        settings.addWidget(self.allow_high_impact, 6, 1)
+        settings.addWidget(self.allow_high_impact, 7, 1)
 
         self.settings_panel = QtWidgets.QWidget()
         self.settings_panel.setLayout(settings)
@@ -798,8 +798,10 @@ class ChatDock(QtWidgets.QWidget):
                 plan = validate_plan(plan)
             except Exception as exc:
                 self._last_plan = None
-                self._append('计划验证失败', str(exc))
-                self.status.setText('✗ AI 操作计划未通过安全验证')
+                error_text = str(exc)
+                self._append('计划验证失败', error_text)
+                self.status.setText('⚠ 正在让模型修正工具参数')
+                self._request_plan_validation_correction(plan, error_text)
                 return
             self._last_plan = plan
             self._append('AI', self._plan_summary(plan))
@@ -818,6 +820,25 @@ class ChatDock(QtWidgets.QWidget):
                 self.status.setText('⚠ AI 未返回可执行 Painter 工具调用，正在自动转换')
                 self._repair_plan_response(text)
 
+    def _request_plan_validation_correction(self, plan, error_text):
+        attempts = int(getattr(self, '_execution_repair_attempts', 0))
+        if attempts >= 3:
+            self.status.setText('✗ 工具参数连续无效，请检查模型/服务的 Tool Calling 支持')
+            return
+        self._execution_repair_attempts = attempts + 1
+        repair = {
+            'role': 'user',
+            'content': (
+                '你的上一份 Painter 工具计划没有通过参数校验。'
+                '请只修正工具参数并重新生成完整 JSON 计划，保留用户意图，不要新增用户没有要求的操作。'
+                'set_opacity 必须有 opacity(0-1)，resource_search 必须有 query，'
+                'set_source_output_mapping 必须有 mapping。不要输出缺少必需参数的动作。\n'
+                '失败原因：\n' + error_text + '\n原计划：\n' + json.dumps(plan, ensure_ascii=False)
+            ),
+        }
+        messages = list(self._messages) + [repair]
+        self._append('系统', '正在重新请求模型修正工具参数……')
+        QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, self._correction_done))
     def _plan_summary(self, plan):
         labels = []
         for action in plan.get('actions', []):
