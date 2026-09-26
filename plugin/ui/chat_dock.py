@@ -408,9 +408,48 @@ class ChatDock(QtWidgets.QWidget):
                 return
             self._last_plan = plan
             self.status.setText("✓ 已根据实际结果生成修正计划")
+            if self.execution_mode.currentData() == "auto":
+                self._auto_execute_if_safe(plan)
         else:
             self.status.setText("✗ AI 没有返回有效修正计划")
 
+    def _repair_plan_response(self, original_text):
+        try:
+            context = prompt_context()
+        except Exception as exc:
+            context = json.dumps({"context_error": str(exc)}, ensure_ascii=False)
+        repair = {"role": "user", "content": (
+            "请把上一条回复转换为严格的 JSON 操作计划。"
+            "只输出一个 JSON 对象，格式为 {\"actions\":[...]}。"
+            "操作计划会由宿主插件验证并执行。"
+            "\n上一条回复：\n" + str(original_text) +
+            "\n当前 Painter 上下文：\n" + context
+        )}
+        messages = list(self._messages) + [repair]
+        self._append("系统", "正在转换为可执行 Painter 操作计划……")
+        QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, self._plan_repair_done))
+
+    @QtCore.Slot(str, str)
+    def _plan_repair_done(self, state, text):
+        if state != "ok":
+            self._append("计划转换失败", text)
+            self.status.setText("✗ 无法生成执行计划")
+            return
+        self._append("AI 执行计划", text)
+        plan = self._parse_plan_response(text)
+        if not isinstance(plan, dict):
+            self.status.setText("✗ 未获得有效执行计划")
+            return
+        try:
+            plan = validate_plan(plan)
+        except Exception as exc:
+            self._append("计划验证失败", str(exc))
+            self.status.setText("✗ 执行计划未通过验证")
+            return
+        self._last_plan = plan
+        self.status.setText("✓ 已获得可执行计划")
+        if self.execution_mode.currentData() == "auto":
+            self._auto_execute_if_safe(plan)
     def _clear(self):
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._attachments.clear()
@@ -575,7 +614,8 @@ class ChatDock(QtWidgets.QWidget):
                 if self.execution_mode.currentData() == "auto":
                     self._auto_execute_if_safe(plan)
             else:
-                self.status.setText("✓ 已收到模型回复")
+                self.status.setText("⚠ AI 返回的内容不是操作计划，正在自动转换")
+                self._repair_plan_response(text)
         else:
             if self._messages and self._messages[-1].get("role") == "user":
                 self._messages.pop()
