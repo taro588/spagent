@@ -234,3 +234,12 @@ def test_chat_dock_has_execution_modes_and_high_impact_guard():
     assert "set_source_parameters" in text
     assert "set_effect_parameters" in text
     assert "_confirm_execution" in text
+
+
+def test_chat_ui_is_dialog_only_and_no_plan_preview():
+    dock = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+    assert "QTextBrowser" in dock
+    assert "操作预览" not in dock
+    assert "执行上一次计划" not in dock
+    assert "_attach_file" in dock
+    assert "image_url" in dock
