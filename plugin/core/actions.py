@@ -12,6 +12,7 @@ SUPPORTED_ACTIONS = {
     "set_projection_mode",
     "set_projection_scale",
     "set_fill_property",
+    "set_fill_channel",
     "set_source_parameters",
     "set_effect_parameters",
     "verify_last_created_parameters",
@@ -161,6 +162,7 @@ def validate_plan(plan: dict) -> dict:
         "set_projection_mode": ("mode",),
         "set_projection_scale": ("scale",),
         "set_fill_property": ("property", "value"),
+        "set_fill_channel": ("channel", "value"),
         "set_source_parameters": ("parameters",),
         "set_effect_parameters": ("parameters",),
         "add_generator": ("name",),
@@ -315,9 +317,7 @@ def execute_plan(plan: dict) -> dict:
                 results.append({"action": kind, "target": node.get_name(), "scale": scale})
 
             elif kind == "set_fill_property":
-                if not created:
-                    raise ActionError("set_fill_property 没有可作用的最近节点。")
-                node = created[-1]
+                node = created[-1] if created else selected_nodes()[0]
                 if not isinstance(node, (sp.layerstack.FillLayerNode, sp.layerstack.FillEffectNode)):
                     raise ActionError("set_fill_property 只能作用于 Fill Layer/Fill Effect。")
                 source = _material_source(node)
@@ -332,9 +332,7 @@ def execute_plan(plan: dict) -> dict:
                 results.append({"action": kind, "target": node.get_name(), "property": property_name, "value": value})
 
             elif kind == "set_source_parameters":
-                if not created:
-                    raise ActionError("set_source_parameters 没有可作用的最近节点。")
-                node = created[-1]
+                node = created[-1] if created else selected_nodes()[0]
                 source = _material_source(node)
                 values = action.get("parameters")
                 if not isinstance(values, dict) or not values:
@@ -351,9 +349,7 @@ def execute_plan(plan: dict) -> dict:
                 results.append({"action": kind, "target": node.get_name(), "parameters": values})
 
             elif kind == "set_effect_parameters":
-                if not created:
-                    raise ActionError("set_effect_parameters 没有可作用的最近节点。")
-                node = created[-1]
+                node = created[-1] if created else selected_nodes()[0]
                 if not hasattr(node, "get_parameters") or not hasattr(node, "set_parameters"):
                     raise ActionError("目标 Effect 不支持参数编辑。")
                 values = action.get("parameters")
