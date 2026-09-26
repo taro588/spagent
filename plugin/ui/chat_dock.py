@@ -124,6 +124,24 @@ class ChatDock(QtWidgets.QWidget):
         self.base_url = QtWidgets.QLineEdit()
         settings.addWidget(self.base_url, 3, 1)
 
+        workflow_group = QtWidgets.QGroupBox("材质工作流选项")
+        workflow_layout = QtWidgets.QGridLayout(workflow_group)
+        self.workflow_bake = QtWidgets.QCheckBox("烘焙 Mesh Maps")
+        self.workflow_mask = QtWidgets.QCheckBox("添加 Smart Mask")
+        self.workflow_generator = QtWidgets.QCheckBox("添加 Generator")
+        self.workflow_export = QtWidgets.QCheckBox("完成后导出贴图")
+        self.workflow_resolution = QtWidgets.QComboBox()
+        self.workflow_resolution.addItem("保持当前分辨率", "")
+        self.workflow_resolution.addItem("1024", "1024")
+        self.workflow_resolution.addItem("2048", "2048")
+        self.workflow_resolution.addItem("4096", "4096")
+        workflow_layout.addWidget(self.workflow_bake, 0, 0)
+        workflow_layout.addWidget(self.workflow_mask, 0, 1)
+        workflow_layout.addWidget(self.workflow_generator, 1, 0)
+        workflow_layout.addWidget(self.workflow_export, 1, 1)
+        workflow_layout.addWidget(QtWidgets.QLabel("分辨率"), 2, 0)
+        workflow_layout.addWidget(self.workflow_resolution, 2, 1)
+        settings.addWidget(workflow_group, 4, 0, 1, 2)
         settings.addWidget(QtWidgets.QLabel("执行模式"), 4, 0)
         self.execution_mode = QtWidgets.QComboBox()
         self.execution_mode.addItem("仅生成计划", "plan")
@@ -728,6 +746,15 @@ class ChatDock(QtWidgets.QWidget):
     def _send(self):
         self._execution_repair_attempts = 0
         text = self.input.toPlainText().strip()
+        workflow_options = {
+            "bake": bool(self.workflow_bake.isChecked()),
+            "smart_mask": bool(self.workflow_mask.isChecked()),
+            "generator": bool(self.workflow_generator.isChecked()),
+            "export": bool(self.workflow_export.isChecked()),
+            "resolution": self.workflow_resolution.currentData() or None,
+        }
+        if any(workflow_options.values()):
+            text += "\n[用户已选择材质工作流选项：]" + json.dumps(workflow_options, ensure_ascii=False) + "\n请严格按这些选项执行；未选择的选项禁止自行执行。"
         if not text or self._thread is not None:
             return
 
