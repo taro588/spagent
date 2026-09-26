@@ -9,6 +9,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={code:GetPainterPluginDir}
+UninstallDisplayName={#MyAppName}
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 Uninstallable=yes
@@ -17,6 +18,7 @@ OutputBaseFilename=SP_AI_Assistant_Setup_{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=lowest
+WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 
 [Files]
