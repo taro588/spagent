@@ -139,6 +139,8 @@ def test_context_and_actions():
     assert "validate_plan" in actions
     assert "_material_source" in actions
     assert "_normalize_parameter_value" in actions
+    assert "values = {" in actions
+    assert "str(name): _normalize_parameter_value(value)" in actions
     assert "set_material_source" in actions
     assert "get_material_source" in actions
 
