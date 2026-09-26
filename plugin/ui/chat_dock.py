@@ -394,8 +394,35 @@ class ChatDock(QtWidgets.QWidget):
             else:
                 self.status.setText("✓ Painter 操作完成并通过验证")
         except Exception as exc:
-            self.status.setText("✗ Painter 操作失败")
-            self._append("执行错误", str(exc))
+            self.status.setText("✗ Painter 操作失败，正在请求 AI 修正")
+            error_text = f"{type(exc).__name__}: {exc}"
+            self._append("执行错误", error_text)
+            self._request_execution_correction(plan, error_text)
+
+    def _request_execution_correction(self, plan, error_text):
+        attempts = int(getattr(self, "_execution_repair_attempts", 0))
+        if attempts >= 2:
+            self._append("系统", "同一操作已连续失败 2 次，停止自动重试，请检查 Painter 当前上下文。")
+            return
+        self._execution_repair_attempts = attempts + 1
+        try:
+            context = prompt_context()
+        except Exception as exc:
+            context = json.dumps({"context_error": str(exc)}, ensure_ascii=False)
+        repair = {
+            "role": "user",
+            "content": (
+                "刚才的 Painter 官方 API 操作没有执行成功。"
+                "请读取实际错误和当前上下文，重新生成只使用允许动作名称的 JSON 计划。"
+                "不要重复导致错误的动作；如果是 Split/Material 模式问题，请按照 source_mode 选择正确 API。"
+                "\n失败计划：\n" + json.dumps(plan, ensure_ascii=False) +
+                "\n实际错误：\n" + error_text +
+                "\n当前 Painter 上下文：\n" + context
+            ),
+        }
+        messages = list(self._messages) + [repair]
+        self._append("系统", "正在根据 Painter 实际错误自动修正……")
+        QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, self._correction_done))
 
     def _request_correction(self, plan, result):
         try:
