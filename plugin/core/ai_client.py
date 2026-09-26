@@ -122,6 +122,10 @@ PAINTER_ACTION_TOOL = {
 class AIError(RuntimeError):
     pass
 
+def web_search(query, max_results=5):
+    return _web_search(query, max_results)
+
+
 def _web_search(query, max_results=5):
     """Provider-independent lightweight web search for non-OpenAI providers."""
     import html
