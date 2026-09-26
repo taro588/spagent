@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 
 
-AI_CLIENT_BUILD = "0.3.3-fix1"
+AI_CLIENT_BUILD = "0.3.5"
 
 PROVIDERS = {
     "OpenAI": {
