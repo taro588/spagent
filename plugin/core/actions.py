@@ -21,6 +21,40 @@ SUPPORTED_ACTIONS = {
     "add_smart_mask",
     "add_smart_material",
     "set_fill_material",
+    "set_uniform_color",
+    "set_source_resource",
+    "set_source_preset",
+    "set_source_output_mapping",
+    "set_blending_mode",
+    "set_visibility",
+    "set_mask_enabled",
+    "set_mask_background",
+    "set_geometry_mask",
+    "add_anchor_point",
+    "add_color_selection",
+    "add_compare_mask",
+    "add_levels",
+    "texture_stack_select",
+    "texture_channel_add",
+    "texture_channel_remove",
+    "texture_channel_edit",
+    "texture_set_resolution",
+    "project_open",
+    "project_save",
+    "project_save_as",
+    "project_save_copy",
+    "project_reload_mesh",
+    "display_environment",
+    "display_color_lut",
+    "display_tone_mapping",
+    "resource_import_project",
+    "resource_search",
+    "resource_project_list",
+    "bake_start",
+    "bake_highpoly",
+    "export_mesh",
+    "save_smart_material",
+    "save_smart_mask",
     "rename_selected",
     "delete_selected",
     "select_last_created",
@@ -146,6 +180,47 @@ def _normalize_parameter_value(value):
         return {str(k): _normalize_parameter_value(v) for k, v in value.items()}
     return value
 
+
+
+def _parse_color(value):
+    if isinstance(value, str):
+        text = value.strip().lstrip("#")
+        if len(text) in (6, 8):
+            try:
+                parts = [int(text[i:i+2], 16) / 255.0 for i in range(0, len(text), 2)]
+                if len(parts) == 3:
+                    parts.append(1.0)
+                return sp.colormanagement.Color(*parts)
+            except ValueError:
+                pass
+    if isinstance(value, (list, tuple)) and len(value) in (3, 4):
+        vals = [float(v) for v in value]
+        if max(vals) > 1.0:
+            vals = [v / 255.0 for v in vals]
+        if len(vals) == 3:
+            vals.append(1.0)
+        return sp.colormanagement.Color(*vals)
+    if isinstance(value, dict):
+        keys = ["r", "g", "b", "a"]
+        if all(k in value for k in keys[:3]):
+            vals = [float(value[k]) for k in keys if k in value]
+            if max(vals) > 1.0:
+                vals = [v / 255.0 for v in vals]
+            if len(vals) == 3:
+                vals.append(1.0)
+            return sp.colormanagement.Color(*vals)
+    raise ActionError("颜色必须是 #RRGGBB/#RRGGBBAA、RGB(A) 数组或颜色对象。")
+
+
+def _set_public_params(obj, values, allowed):
+    if not isinstance(values, dict) or not values:
+        raise ActionError("parameters 必须是非空对象。")
+    unknown = [k for k in values if k not in allowed]
+    if unknown:
+        raise ActionError("不允许设置的参数: " + ", ".join(unknown))
+    for key, value in values.items():
+        setattr(obj, key, _normalize_parameter_value(value))
+
 def validate_plan(plan: dict) -> dict:
     """Validate an AI-generated plan before any Painter mutation occurs."""
     if not isinstance(plan, dict) or not isinstance(plan.get("actions"), list):
@@ -157,6 +232,40 @@ def validate_plan(plan: dict) -> dict:
         raise ActionError("单次最多执行 20 个动作。")
 
     required = {
+        "set_uniform_color": ("channel", "color"),
+        "set_source_resource": ("channel", "resource"),
+        "set_source_preset": ("preset",),
+        "set_source_output_mapping": ("mapping",),
+        "set_blending_mode": ("mode",),
+        "set_visibility": ("visible",),
+        "set_mask_enabled": ("enabled",),
+        "set_mask_background": ("background",),
+        "set_geometry_mask": ("parameters",),
+        "add_anchor_point": (),
+        "add_color_selection": (),
+        "add_compare_mask": (),
+        "add_levels": (),
+        "texture_stack_select": ("stack",),
+        "texture_channel_add": ("channel", "format"),
+        "texture_channel_remove": ("channel",),
+        "texture_channel_edit": ("channel", "format"),
+        "texture_set_resolution": ("resolution",),
+        "project_open": ("path",),
+        "project_save": (),
+        "project_save_as": ("path",),
+        "project_save_copy": ("path",),
+        "project_reload_mesh": ("path",),
+        "display_environment": ("resource",),
+        "display_color_lut": ("resource",),
+        "display_tone_mapping": ("mode",),
+        "resource_import_project": ("path", "usage"),
+        "resource_search": ("query",),
+        "resource_project_list": (),
+        "bake_start": (),
+        "bake_highpoly": ("path",),
+        "export_mesh": ("path",),
+        "save_smart_material": ("path", "name"),
+        "save_smart_mask": ("path", "name"),
         "set_opacity": ("opacity",),
         "set_active_channels": ("channels",),
         "set_projection_mode": ("mode",),
@@ -473,6 +582,202 @@ def execute_plan(plan: dict) -> dict:
                     raise ActionError("没有最近创建的节点。")
                 pending_selection = created[-1]
                 results.append({"action": kind, "uid": created[-1].uid()})
+
+            elif kind == "set_uniform_color":
+                node = created[-1] if created else selected_nodes()[0]
+                channel = getattr(sp.textureset.ChannelType, str(action["channel"]))
+                node.set_source(channel, _parse_color(action["color"]))
+                results.append({"action": kind, "target": node.get_name(), "channel": str(action["channel"]), "color": action["color"]})
+
+            elif kind == "set_source_resource":
+                node = created[-1] if created else selected_nodes()[0]
+                channel = getattr(sp.textureset.ChannelType, str(action["channel"]))
+                resource = _resource(action.get("usage", "base_material"), action["resource"])
+                node.set_source(channel, resource.identifier())
+                results.append({"action": kind, "target": node.get_name(), "channel": str(action["channel"]), "resource": resource.gui_name()})
+
+            elif kind == "set_source_preset":
+                node = created[-1] if created else selected_nodes()[0]
+                source = _material_source(node)
+                source.apply_preset(str(action["preset"]))
+                results.append({"action": kind, "target": node.get_name(), "preset": action["preset"]})
+
+            elif kind == "set_source_output_mapping":
+                node = created[-1] if created else selected_nodes()[0]
+                source = _material_source(node)
+                mapping = {}
+                for channel, output in dict(action["mapping"]).items():
+                    mapping[getattr(sp.textureset.ChannelType, str(channel))] = str(output)
+                source.output_mapping = mapping
+                results.append({"action": kind, "target": node.get_name(), "mapping": action["mapping"]})
+
+            elif kind == "set_blending_mode":
+                node = created[-1] if created else selected_nodes()[0]
+                if not node.has_blending():
+                    raise ActionError("目标节点没有 Blending Mode。")
+                mode = getattr(sp.layerstack.BlendingMode, str(action["mode"]))
+                node.set_blending_mode(mode)
+                results.append({"action": kind, "target": node.get_name(), "mode": str(action["mode"])})
+
+            elif kind == "set_visibility":
+                node = created[-1] if created else selected_nodes()[0]
+                node.set_visible(bool(action["visible"]))
+                results.append({"action": kind, "target": node.get_name(), "visible": bool(action["visible"])})
+
+            elif kind == "set_mask_enabled":
+                node = created[-1] if created else selected_nodes()[0]
+                node.enable_mask(bool(action["enabled"]))
+                results.append({"action": kind, "target": node.get_name(), "enabled": bool(action["enabled"])})
+
+            elif kind == "set_mask_background":
+                node = created[-1] if created else selected_nodes()[0]
+                if not node.has_mask():
+                    node.add_mask(sp.layerstack.MaskBackground.Black)
+                bg = getattr(sp.layerstack.MaskBackground, str(action["background"]).capitalize())
+                node.set_mask_background(bg)
+                results.append({"action": kind, "target": node.get_name(), "background": str(action["background"])})
+
+            elif kind == "set_geometry_mask":
+                node = created[-1] if created else selected_nodes()[0]
+                params = action["parameters"]
+                if not isinstance(params, dict):
+                    raise ActionError("geometry mask parameters 必须是对象。")
+                node.set_geometry_mask(**params)
+                results.append({"action": kind, "target": node.get_name(), "parameters": params})
+
+            elif kind in {"add_anchor_point", "add_color_selection", "add_compare_mask", "add_levels"}:
+                node = created[-1] if created else selected_nodes()[0]
+                pos = _content_position(node)
+                fn = {
+                    "add_anchor_point": sp.layerstack.insert_anchor_point_effect,
+                    "add_color_selection": sp.layerstack.insert_color_selection_effect,
+                    "add_compare_mask": sp.layerstack.insert_compare_mask_effect,
+                    "add_levels": sp.layerstack.insert_levels_effect,
+                }[kind]
+                effect = fn(pos)
+                if action.get("name"):
+                    effect.set_name(_name(action["name"], kind))
+                if action.get("parameters"):
+                    current = effect.get_parameters()
+                    _set_public_params(current, action["parameters"], set(action["parameters"].keys()))
+                    effect.set_parameters(current)
+                created.append(effect)
+                results.append({"action": kind, "target": node.get_name(), "uid": effect.uid()})
+
+            elif kind == "texture_stack_select":
+                stack = sp.textureset.Stack.from_name(str(action["stack"]))
+                sp.textureset.set_active_stack(stack)
+                results.append({"action": kind, "stack": stack.name()})
+
+            elif kind in {"texture_channel_add", "texture_channel_remove", "texture_channel_edit"}:
+                stack = _active_stack()
+                channel = getattr(sp.textureset.ChannelType, str(action["channel"]))
+                if kind == "texture_channel_add":
+                    fmt = getattr(sp.textureset.ChannelFormat, str(action["format"]))
+                    stack.add_channel(channel, fmt, action.get("label"))
+                elif kind == "texture_channel_remove":
+                    stack.remove_channel(channel)
+                else:
+                    fmt = getattr(sp.textureset.ChannelFormat, str(action["format"]))
+                    stack.edit_channel(channel, fmt, action.get("label"))
+                results.append({"action": kind, "channel": str(action["channel"])})
+
+            elif kind == "texture_set_resolution":
+                material = _active_stack().material()
+                resolution = action["resolution"]
+                if isinstance(resolution, int):
+                    value = sp.textureset.Resolution(resolution, resolution)
+                else:
+                    value = sp.textureset.Resolution(int(resolution[0]), int(resolution[1]))
+                material.set_resolution(value)
+                results.append({"action": kind, "resolution": [value.width, value.height]})
+
+            elif kind == "project_open":
+                sp.project.open(str(action["path"]))
+                results.append({"action": kind, "path": str(action["path"])})
+
+            elif kind == "project_save":
+                sp.project.save()
+                results.append({"action": kind, "path": sp.project.file_path()})
+
+            elif kind == "project_save_as":
+                sp.project.save_as(str(action["path"]))
+                results.append({"action": kind, "path": str(action["path"])})
+
+            elif kind == "project_save_copy":
+                sp.project.save_as_copy(str(action["path"]))
+                results.append({"action": kind, "path": str(action["path"])})
+
+            elif kind == "project_reload_mesh":
+                path = str(action["path"])
+                settings = sp.project.MeshReloadingSettings(import_cameras=True, preserve_strokes=True)
+                callback = lambda status: None
+                sp.project.reload_mesh(path, settings, callback)
+                results.append({"action": kind, "path": path, "status": "started"})
+
+            elif kind in {"display_environment", "display_color_lut"}:
+                resource = sp.resource.ResourceID.from_url(str(action["resource"])) if "://" in str(action["resource"]) else sp.resource.search(str(action["resource"]))[0].identifier()
+                if kind == "display_environment":
+                    sp.display.set_environment_resource(resource)
+                else:
+                    sp.display.set_color_lut_resource(resource)
+                results.append({"action": kind, "resource": str(action["resource"])})
+
+            elif kind == "display_tone_mapping":
+                mode = getattr(sp.display.ToneMappingFunction, str(action["mode"]))
+                sp.display.set_tone_mapping(mode)
+                results.append({"action": kind, "mode": str(action["mode"])})
+
+            elif kind == "resource_import_project":
+                usage = getattr(sp.resource.Usage, str(action["usage"]))
+                resource = sp.resource.import_project_resource(str(action["path"]), usage, action.get("name"), action.get("group"))
+                results.append({"action": kind, "resource": resource.gui_name()})
+
+            elif kind == "resource_search":
+                resources = sp.resource.search(str(action["query"]))
+                results.append({"action": kind, "count": len(resources), "resources": [
+                    {"name": r.gui_name(), "id": r.identifier().url()} for r in resources[:50]
+                ]})
+
+            elif kind == "resource_project_list":
+                resources = sp.resource.list_project_resources()
+                results.append({"action": kind, "count": len(resources), "resources": [
+                    {"name": r.gui_name(), "id": r.identifier().url()} for r in resources[:100]
+                ]})
+
+            elif kind == "bake_highpoly":
+                from PySide2 import QtCore
+                highpoly = QtCore.QUrl.fromLocalFile(str(action["path"])).toString()
+                params = sp.baking.BakingParameters.from_texture_set(_active_stack().material())
+                common = params.common()
+                sp.baking.BakingParameters.set({common["HipolyMesh"]: highpoly})
+                results.append({"action": kind, "path": str(action["path"])})
+
+            elif kind == "bake_start":
+                sp.baking.bake_selected_textures_async()
+                results.append({"action": kind, "status": "started"})
+
+            elif kind == "export_mesh":
+                result = sp.export.export_mesh(str(action["path"]))
+                results.append({"action": kind, "path": str(action["path"]), "result": _serializable(result)})
+
+            elif kind == "save_smart_material":
+                node = created[-1] if created else selected_nodes()[0]
+                if not isinstance(node, sp.layerstack.GroupLayerNode):
+                    raise ActionError("save_smart_material 需要 Group Layer。")
+                resource = sp.layerstack.create_smart_material(node, str(action["name"]))
+                path = str(action["path"])
+                sp.layerstack.export_as_smart_material(node, str(action["name"]), path)
+                results.append({"action": kind, "resource": resource.identifier().url(), "path": path})
+
+            elif kind == "save_smart_mask":
+                node = created[-1] if created else selected_nodes()[0]
+                if not isinstance(node, sp.layerstack.GroupLayerNode):
+                    raise ActionError("save_smart_mask 需要 Group Layer。")
+                resource = sp.layerstack.create_smart_mask(node, str(action["name"]))
+                path = str(action["path"])
+                sp.layerstack.export_as_smart_mask(node, str(action["name"]), path)
+                results.append({"action": kind, "resource": resource.identifier().url(), "path": path})
 
             elif kind == "export_textures":
                 export_path = str(action.get("export_path") or "").strip()
