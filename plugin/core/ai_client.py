@@ -414,7 +414,7 @@ def _gemini(messages, model, api_key, base_url):
                 "role": "model" if role == "assistant" else "user",
                 "parts": _gemini_parts(content),
             })
-    payload = {"contents": contents}
+    payload = {"contents": contents, "tools": [{"google_search": {}}]}
     if system_parts:
         payload["systemInstruction"] = {"parts": [{"text": "\n".join(system_parts)}]}
     data = _post(
