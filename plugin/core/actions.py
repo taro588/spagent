@@ -655,13 +655,16 @@ def execute_plan(plan: dict) -> dict:
             elif kind in {"add_anchor_point", "add_color_selection", "add_compare_mask", "add_levels"}:
                 node = created[-1] if created else selected_nodes()[0]
                 pos = _content_position(node)
-                fn = {
-                    "add_anchor_point": sp.layerstack.insert_anchor_point_effect,
-                    "add_color_selection": sp.layerstack.insert_color_selection_effect,
-                    "add_compare_mask": sp.layerstack.insert_compare_mask_effect,
-                    "add_levels": sp.layerstack.insert_levels_effect,
-                }[kind]
-                effect = fn(pos)
+                if kind == "add_anchor_point":
+                    effect = sp.layerstack.insert_anchor_point_effect(pos, _name(action.get("name"), "AI Anchor Point"))
+                else:
+                    pos = _mask_position(node)
+                    fn = {
+                        "add_color_selection": sp.layerstack.insert_color_selection_effect,
+                        "add_compare_mask": sp.layerstack.insert_compare_mask_effect,
+                        "add_levels": sp.layerstack.insert_levels_effect,
+                    }[kind]
+                    effect = fn(pos)
                 if action.get("name"):
                     effect.set_name(_name(action["name"], kind))
                 if action.get("parameters"):
