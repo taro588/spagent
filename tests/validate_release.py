@@ -71,6 +71,8 @@ def test_installer_detection_logic():
     assert "VerifyInstall" in iss
     assert "FileExists(ExpandConstant('{app}\\sp_ai_assistant.py'))" in iss
     assert "FileExists(ManifestPath)" in iss
+    assert "DirExists(CoreDir)" in iss
+    assert "DirExists(UiDir)" in iss
     assert 'Type: files; Name: "{app}\\core\\*"' in iss
     assert 'Type: files; Name: "{app}\\ui\\*"' in iss
 
