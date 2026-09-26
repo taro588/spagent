@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 
 from core.actions import execute_plan, validate_plan
@@ -174,15 +175,34 @@ class ChatDock(QtWidgets.QWidget):
         root.addWidget(self.history, 1)
 
         bottom = QtWidgets.QHBoxLayout()
+        bottom.setSpacing(6)
+        self.attach = QtWidgets.QPushButton("+")
+        self.attach.setFixedWidth(34)
+        self.attach.setToolTip("为后续版本预留：添加参考图/资源")
+        bottom.addWidget(self.attach)
+
         self.input = QtWidgets.QLineEdit()
-        self.input.setPlaceholderText("例如：创建旧水泥 Fill Layer，并添加一个 Generator")
+        self.input.setPlaceholderText("输入 @ 即可添加 Painter 上下文，例如：做一个旧水泥材质")
         self.input.returnPressed.connect(self._send)
         bottom.addWidget(self.input, 1)
 
-        self.send = QtWidgets.QPushButton("生成/发送")
+        self.bottom_mode = QtWidgets.QComboBox()
+        self.bottom_mode.addItem("确认执行", "confirm")
+        self.bottom_mode.addItem("仅计划", "plan")
+        self.bottom_mode.addItem("低风险自动", "auto")
+        self.bottom_mode.setCurrentIndex(0)
+        self.bottom_mode.setToolTip("与执行模式同步")
+        bottom.addWidget(self.bottom_mode)
+
+        self.send = QtWidgets.QPushButton("↑")
+        self.send.setFixedSize(38, 34)
+        self.send.setToolTip("发送")
         self.send.clicked.connect(self._send)
         bottom.addWidget(self.send)
         root.addLayout(bottom)
+
+        self.execution_mode.currentIndexChanged.connect(self._sync_bottom_mode)
+        self.bottom_mode.currentIndexChanged.connect(self._sync_execution_mode)
 
         self.provider.currentTextChanged.connect(self._load_provider)
         self.model_badge.currentTextChanged.connect(self._sync_model_badge)
@@ -207,6 +227,17 @@ class ChatDock(QtWidgets.QWidget):
         self.model_badge.setCurrentText(self.model.currentText())
         self.model_badge.blockSignals(False)
         self.status.setText("已读取本机配置" if config["api_key"] else "未配置 API Key")
+
+    def _sync_bottom_mode(self, index):
+        if hasattr(self, "bottom_mode"):
+            self.bottom_mode.blockSignals(True)
+            self.bottom_mode.setCurrentIndex(index)
+            self.bottom_mode.blockSignals(False)
+
+    def _sync_execution_mode(self, index):
+        self.execution_mode.blockSignals(True)
+        self.execution_mode.setCurrentIndex(index)
+        self.execution_mode.blockSignals(False)
 
     def _sync_model_badge(self, model_name):
         if model_name:
