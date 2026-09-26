@@ -144,7 +144,6 @@ class ChatDock(QtWidgets.QWidget):
             ("测试连接", self._test_connection),
             ("读取 Painter 上下文", self._context),
             ("运行插件自检", self._self_check),
-            ("执行上一次计划", self._execute_last_plan),
             ("清空对话", self._clear),
         ):
             button = QtWidgets.QPushButton(label)
@@ -152,20 +151,13 @@ class ChatDock(QtWidgets.QWidget):
             buttons.addWidget(button)
         root.addLayout(buttons)
 
-        self.plan_preview = QtWidgets.QPlainTextEdit()
-        self.plan_preview.setReadOnly(True)
-        self.plan_preview.setPlaceholderText("AI 生成操作计划后，这里会显示执行预览。")
-        self.plan_preview.setMaximumHeight(180)
-        root.addWidget(QtWidgets.QLabel("<b>操作预览</b>"))
-        root.addWidget(self.plan_preview)
-
         self.status = QtWidgets.QLabel("未配置 AI")
         root.addWidget(self.status)
 
-        self.history = QtWidgets.QPlainTextEdit()
-        self.history.setReadOnly(True)
+        self.history = QtWidgets.QTextBrowser()
+        self.history.setOpenExternalLinks(False)
         self.history.setStyleSheet(
-            "QPlainTextEdit { background:#111214; border:none; padding:8px; font-size:13px; }"
+            "QTextBrowser { background:#111214; border:none; padding:8px; font-size:13px; }"
         )
         root.addWidget(self.history, 1)
 
@@ -415,8 +407,7 @@ class ChatDock(QtWidgets.QWidget):
                 self._append("修正计划验证失败", str(exc))
                 return
             self._last_plan = plan
-            self._show_plan_preview(plan)
-            self.status.setText("✓ 已根据实际结果生成修正计划，请检查后执行")
+            self.status.setText("✓ 已根据实际结果生成修正计划")
         else:
             self.status.setText("✗ AI 没有返回有效修正计划")
 
@@ -425,12 +416,42 @@ class ChatDock(QtWidgets.QWidget):
         self._attachments.clear()
         self._last_plan = None
         self._last_execution = None
-        self.plan_preview.clear()
         self.history.clear()
         self.status.setText("对话已清空")
 
-    def _append(self, role, message):
-        self.history.appendPlainText(f"{role}：\n{message}\n")
+    @staticmethod
+    def _extract_image_urls(message):
+        import re
+        urls = []
+        text = str(message or "")
+        for match in re.finditer(r"!\[[^\]]*\]\((https?://[^)\s]+|data:image/[^)\s]+)\)", text):
+            urls.append(match.group(1))
+        for match in re.finditer(r"(?:image_url|image|url)\s*[:=]\s*["'](https?://[^"']+|data:image/[^"']+)", text):
+            urls.append(match.group(1))
+        return list(dict.fromkeys(urls))
+
+    def _append(self, role, message, images=None):
+        images = list(images or [])
+        images.extend(self._extract_image_urls(message))
+        safe_role = html.escape(str(role))
+        safe_message = html.escape(str(message or "")).replace("\n", "<br>")
+        image_html = ""
+        for url in list(dict.fromkeys(images)):
+            safe_url = html.escape(str(url), quote=True)
+            image_html += (
+                '<div style="margin:8px 0;">'
+                f'<img src="{safe_url}" width="420" '
+                'style="border-radius:10px; border:1px solid #30343b;">'
+                '</div>'
+            )
+        block = (
+            '<div style="margin:10px 0 14px 0;">'
+            f'<div style="color:#9aa1ad; font-weight:600; margin-bottom:4px;">{safe_role}</div>'
+            f'<div style="color:#f2f3f5; line-height:1.45;">{safe_message}</div>'
+            f'{image_html}'
+            '</div>'
+        )
+        self.history.append(block)
         self.history.verticalScrollBar().setValue(self.history.verticalScrollBar().maximum())
 
     def _set_busy(self, busy):
@@ -504,6 +525,7 @@ class ChatDock(QtWidgets.QWidget):
                 self._append("附件错误", str(exc))
         if added:
             self.status.setText("✓ 已添加参考图：" + ", ".join(names))
+            self._append("你 · 参考图", "已添加到本轮请求", [item["data_url"] for item in self._attachments[-added:]])
 
     def _send(self):
         text = self.input.text().strip()
@@ -545,13 +567,11 @@ class ChatDock(QtWidgets.QWidget):
                     plan = validate_plan(plan)
                 except Exception as exc:
                     self._last_plan = None
-                    self.plan_preview.setPlainText("（计划未通过安全验证）")
                     self._append("计划验证失败", str(exc))
                     self.status.setText("✗ AI 操作计划未通过安全验证")
                     return
                 self._last_plan = plan
-                self._show_plan_preview(plan)
-                self.status.setText("✓ 已生成操作计划，请检查“操作预览”后执行")
+                self.status.setText("✓ AI 已生成计划")
                 if self.execution_mode.currentData() == "auto":
                     self._auto_execute_if_safe(plan)
             else:
@@ -564,20 +584,11 @@ class ChatDock(QtWidgets.QWidget):
 
     def _auto_execute_if_safe(self, plan):
         if self._high_impact_actions(plan):
-            self.status.setText("✓ 已生成计划；包含高影响操作，等待明确确认")
+            self.status.setText("⚠ 包含高影响操作，等待确认")
+            self._execute_last_plan()
             return
         self._execute_last_plan()
 
-    def _show_plan_preview(self, plan):
-        lines = []
-        for index, action in enumerate(plan.get("actions", []), 1):
-            kind = action.get("action", "unknown")
-            detail = {k: v for k, v in action.items() if k != "action"}
-            marker = "【需确认】" if kind in HIGH_IMPACT_ACTIONS else "【低风险】"
-            lines.append(f"{index}. {marker} {kind}")
-            if detail:
-                lines.append("   " + json.dumps(detail, ensure_ascii=False, default=str))
-        self.plan_preview.setPlainText("\n".join(lines) if lines else "（空操作计划）")
 
     def _thread_finished(self):
         self._thread = None
