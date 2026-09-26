@@ -32,6 +32,8 @@ def test_release_versions_are_synchronized():
     assert f'#define MyAppVersion "{version}"' in iss
     assert f"name: SP-AI-Assistant-Setup-{version}" in workflow
     assert f"SP_AI_Assistant_Setup_{{#MyAppVersion}}" in iss
+    assert "SP_AI_Assistant_Setup_0.3.0.sha256" in workflow
+    assert "Get-FileHash -Algorithm SHA256" in workflow
 
 
 def test_installer_payload():
