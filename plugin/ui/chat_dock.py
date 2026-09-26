@@ -426,7 +426,7 @@ class ChatDock(QtWidgets.QWidget):
         text = str(message or "")
         for match in re.finditer(r"!\[[^\]]*\]\((https?://[^)\s]+|data:image/[^)\s]+)\)", text):
             urls.append(match.group(1))
-        for match in re.finditer(r"(?:image_url|image|url)\s*[:=]\s*["'](https?://[^"']+|data:image/[^"']+)", text):
+        for match in re.finditer(r'(?:image_url|image|url)\s*[:=]\s*["\\\'](https?://[^"\\\']+|data:image/[^"\\\']+)', text):
             urls.append(match.group(1))
         return list(dict.fromkeys(urls))
 
