@@ -724,31 +724,63 @@ class ChatDock(QtWidgets.QWidget):
 
     @QtCore.Slot(str, str)
     def _done(self, state, text):
-        if state == "ok":
-            self._messages.append({"role": "assistant", "content": text})
-            self._append("AI", text)
-            plan = self._parse_plan_response(text)
-            if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
-                try:
-                    plan = validate_plan(plan)
-                except Exception as exc:
-                    self._last_plan = None
-                    self._append("计划验证失败", str(exc))
-                    self.status.setText("✗ AI 操作计划未通过安全验证")
-                    return
-                self._last_plan = plan
-                self.status.setText("✓ AI 已生成计划")
-                if self.execution_mode.currentData() == "auto":
-                    self._auto_execute_if_safe(plan)
-            else:
-                self.status.setText("⚠ AI 返回的内容不是操作计划，正在自动转换")
-                self._repair_plan_response(text)
-        else:
-            if self._messages and self._messages[-1].get("role") == "user":
+        if state != 'ok':
+            if self._messages and self._messages[-1].get('role') == 'user':
                 self._messages.pop()
-            self._append("错误", text)
-            self.status.setText("✗ 请求失败")
+            self._append('错误', text)
+            self.status.setText('✗ 请求失败')
+            return
+        self._messages.append({'role': 'assistant', 'content': text})
+        plan = self._parse_plan_response(text)
+        if isinstance(plan, dict) and isinstance(plan.get('actions'), list):
+            try:
+                plan = validate_plan(plan)
+            except Exception as exc:
+                self._last_plan = None
+                self._append('计划验证失败', str(exc))
+                self.status.setText('✗ AI 操作计划未通过安全验证')
+                return
+            self._last_plan = plan
+            self._append('AI', self._plan_summary(plan))
+            self.status.setText('✓ AI 已生成可执行操作')
+            if (self.permission_mode.currentData() if hasattr(self, 'permission_mode') else self.execution_mode.currentData()) == 'auto':
+                self._auto_execute_if_safe(plan)
+        else:
+            self._append('AI', text)
+            fallback = self._fallback_plan_from_user_request()
+            if fallback:
+                self._last_plan = fallback
+                self._append('系统', '模型没有返回工具调用，已根据用户明确的简单 Painter 指令生成本地执行计划。')
+                if (self.permission_mode.currentData() if hasattr(self, 'permission_mode') else self.execution_mode.currentData()) == 'auto':
+                    self._auto_execute_if_safe(fallback)
+            else:
+                self.status.setText('⚠ AI 未返回可执行 Painter 工具调用，正在自动转换')
+                self._repair_plan_response(text)
 
+    def _plan_summary(self, plan):
+        labels = []
+        for action in plan.get('actions', []):
+            if isinstance(action, dict) and action.get('action'):
+                name = action.get('name')
+                labels.append(str(action['action']) + (('：' + str(name)) if name else ''))
+        return '准备执行：\n' + '\n'.join('• ' + item for item in labels) if labels else '准备执行 Painter 操作'
+
+    def _fallback_plan_from_user_request(self):
+        import re
+        for message in reversed(self._messages):
+            if message.get('role') != 'user':
+                continue
+            content = message.get('content', '')
+            if isinstance(content, list):
+                content = next((x.get('text', '') for x in content if isinstance(x, dict) and x.get('type') == 'text'), '')
+            text = str(content)
+            if re.search(r'(创建|新建|添加).*(填充|Fill) ?(Layer|图层)', text, re.I):
+                match = re.search(r'(?:命名|叫|名称(?:为)?)[：:\\s]*[“\"「]?([^“\"」\\n，,。]+)', text)
+                name = match.group(1).strip() if match else 'AI Fill Layer'
+                return {'actions': [{'action': 'create_fill_layer', 'name': name}]}
+            if re.search(r'(创建|新建|添加).*(绘画|Paint) ?(Layer|图层)', text, re.I):
+                return {'actions': [{'action': 'create_paint_layer', 'name': 'AI Paint Layer'}]}
+        return None
     def _auto_execute_if_safe(self, plan):
         if self._high_impact_actions(plan):
             self.status.setText("⚠ 包含高影响操作，等待确认")
