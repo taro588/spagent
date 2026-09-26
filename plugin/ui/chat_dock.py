@@ -720,6 +720,7 @@ class ChatDock(QtWidgets.QWidget):
         return super().eventFilter(watched, event)
 
     def _send(self):
+        self._execution_repair_attempts = 0
         text = self.input.toPlainText().strip()
         if not text or self._thread is not None:
             return
