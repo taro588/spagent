@@ -223,7 +223,7 @@ def chat(provider_name: str, messages: list[dict], model: str, api_key: str, bas
     provider_id = info["id"]
     if provider_id == "openai":
         return _openai_responses(messages, model, api_key, base)
-    if provider_id in {"openai_compatible", "deepseek", "kimi", "qwen", "minimax"}:
+    if provider_id in {"openai_compatible", "deepseek", "kimi", "qwen", "glm", "minimax"}:
         return _openai_compatible(messages, model, api_key, base)
     if provider_id == "anthropic":
         return _anthropic(messages, model, api_key, base)
