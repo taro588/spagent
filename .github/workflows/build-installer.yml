@@ -56,12 +56,12 @@ jobs:
           if ($exe.Length -lt 100000) { throw "Installer EXE is unexpectedly small: $($exe.Length) bytes" }
           Write-Host "Built: $($exe.FullName)"
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe.FullName).Hash
-          "$hash  $($exe.Name)" | Set-Content -Encoding ascii "installer\output\SP_AI_Assistant_Setup_0.3.4.sha256"
+          "$hash  $($exe.Name)" | Set-Content -Encoding ascii "installer\output\SP_AI_Assistant_Setup_0.3.5.sha256"
           Write-Host "SHA256: $hash"
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v5
         with:
-          name: SP-AI-Assistant-Setup-0.3.4
+          name: SP-AI-Assistant-Setup-0.3.5
           path: installer/output/*
           if-no-files-found: error
