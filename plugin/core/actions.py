@@ -224,6 +224,23 @@ def _parse_color(value):
     raise ActionError("颜色必须是 #RRGGBB/#RRGGBBAA、RGB(A) 数组或颜色对象。")
 
 
+
+def _channel_source_value(channel_name, value):
+    if isinstance(value, dict) and value.get("resource"):
+        matches = sp.resource.search(str(value["resource"]))
+        if not matches:
+            raise ActionError("找不到资源: " + str(value["resource"]))
+        return matches[0].identifier()
+    name = str(channel_name).casefold()
+    if name in {"basecolor", "base_color", "color", "emissive"}:
+        return _parse_color(value)
+    if isinstance(value, (int, float)):
+        v = max(0.0, min(1.0, float(value)))
+        return sp.colormanagement.Color(v, v, v, 1.0)
+    if isinstance(value, (list, tuple, dict)) or (isinstance(value, str) and value.strip().startswith("#")):
+        return _parse_color(value)
+    raise ActionError(f"{channel_name} 通道的值必须是颜色、数值或 resource。")
+
 def _set_public_params(obj, values, allowed):
     if not isinstance(values, dict) or not values:
         raise ActionError("parameters 必须是非空对象。")
@@ -462,7 +479,7 @@ def execute_plan(plan: dict) -> dict:
                     channel = None
                 source_mode = getattr(node, "source_mode", None)
                 if channel is not None and source_mode is not None:
-                    node.set_source(channel, _parse_color(value))
+                    node.set_source(channel, _channel_source_value(channel_name, value))
                     results.append({"action": kind, "target": node.get_name(), "property": property_name,
                                     "channel": channel_name, "value": value,
                                     "source_mode": getattr(source_mode, "name", str(source_mode)),
@@ -484,23 +501,17 @@ def execute_plan(plan: dict) -> dict:
                 channel = getattr(sp.textureset.ChannelType, str(action["channel"]))
                 channel_arg = channel if getattr(node, "source_mode", None) is not None else None
                 value = action.get("value")
-                if isinstance(value, dict) and value.get("resource"):
-                    matches = sp.resource.search(str(value["resource"]))
-                    if not matches:
-                        raise ActionError("找不到资源: " + str(value["resource"]))
-                    source_value = matches[0].identifier()
-                elif isinstance(value, str) and value.strip().startswith("#"):
-                    source_value = _parse_color(value)
-                elif isinstance(value, (list, tuple, dict)):
-                    source_value = _parse_color(value)
-                else:
-                    raise ActionError("set_fill_channel 的 value 必须是颜色或 resource。")
+                source_value = _channel_source_value(str(action["channel"]), value)
                 node.set_source(channel_arg, source_value)
                 results.append({"action": kind, "target": node.get_name(), "channel": str(action["channel"]),
                                 "value": value, "api": "substance_painter.layerstack.FillLayerNode.set_source"})
 
             elif kind == "set_source_parameters":
                 node = created[-1] if created else selected_nodes()[0]
+                if getattr(node, "source_mode", None) is not None:
+                    mode_name = getattr(getattr(node, "source_mode", None), "name", str(getattr(node, "source_mode", None)))
+                    if mode_name != "Material":
+                        raise ActionError("当前 Fill 是 Split 模式；Substance 参数必须先调用 set_fill_material 切换到 Material 模式，再调用 set_source_parameters。")
                 source = _material_source(node)
                 values = action.get("parameters")
                 if not isinstance(values, dict) or not values:
@@ -917,6 +928,7 @@ def execute_plan(plan: dict) -> dict:
                     "target": node.get_name(),
                     "source_type": type(source).__name__,
                     "source_uid": source.uid() if hasattr(source, "uid") else None,
+                    "source_mode": getattr(getattr(node, "source_mode", None), "name", str(getattr(node, "source_mode", None))),
                 })
 
     # Select created nodes after the modification scope so the result is
