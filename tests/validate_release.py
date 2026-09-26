@@ -104,6 +104,8 @@ def test_ai_modules():
     assert "HTTP 429" not in client
     assert "time.sleep" in client
     assert "_extract_openai_compatible_content" in client
+    assert 'if api_key:\\n        headers["Authorization"]' in client
+    assert 'info["id"] != "openai_compatible"' in client
     assert ":generateContent" in client
     assert "CryptProtectData" in settings
     assert "CryptUnprotectData" in settings
