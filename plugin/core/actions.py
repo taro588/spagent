@@ -542,4 +542,16 @@ def execute_plan(plan: dict) -> dict:
                     "source_uid": source.uid() if hasattr(source, "uid") else None,
                 })
 
+    # Select created nodes after the modification scope so the result is
+    # visible immediately in Painter's Layer Stack.
+    if created:
+        try:
+            sp.layerstack.set_selected_nodes(created)
+            results.append({
+                "action": "select_last_created",
+                "selected_uids": [_serializable(node.uid()) for node in created],
+                "api": "substance_painter.layerstack.set_selected_nodes",
+            })
+        except Exception as exc:
+            results.append({"action": "select_last_created", "warning": str(exc)})
     return {"success": True, "results": results}
