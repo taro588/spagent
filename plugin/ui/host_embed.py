@@ -133,7 +133,9 @@ def sync_geometry(child_hwnd: int, parent_hwnd: int) -> None:
             same_pos = (child_rect.left == origin.x and child_rect.top == origin.y)
             if same_size and same_pos:
                 return
-        user32.SetWindowPos(child, None, 0, 0, width, height,\n                            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW)\n        user32.ShowWindow(child, SW_SHOW)
+        user32.SetWindowPos(child, None, 0, 0, width, height,
+                            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+        user32.ShowWindow(child, SW_SHOW)
     except Exception:
         pass
 
