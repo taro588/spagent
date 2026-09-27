@@ -136,21 +136,7 @@ def main():
                     raise AssertionError(f"browser host DPI awareness={awareness}, expected per-monitor")
 
             if not host_embed.embed(child, parent):
-                # Capture the native failure details instead of hiding them.
-                # This branch is only for CI diagnosis of the cross-process
-                # SetParent contract.
-                get_style = user32.GetWindowLongPtrW
-                get_style.restype = ctypes.c_longlong
-                style = int(get_style(wintypes.HWND(child), -16))
-                direct = user32.SetParent(wintypes.HWND(child), wintypes.HWND(parent))
-                after = int(user32.GetParent(wintypes.HWND(child)) or 0)
-                err = int(kernel32.GetLastError())
-                raise AssertionError(
-                    "host_embed.embed failed; "
-                    f"direct_SetParent_return={int(direct or 0)} "
-                    f"after_parent={after} expected={parent} "
-                    f"last_error={err} style=0x{style:x}"
-                )
+                raise AssertionError("host_embed.embed failed")
             # embed() normalizes the child style/parent first; sync_geometry()
             # is the same second half used by the real plugin immediately
             # after embedding.
