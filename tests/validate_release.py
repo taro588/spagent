@@ -12,7 +12,7 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.5.0"
+    assert data["version"] == "0.5.1"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["max_tested_painter_version"] == "11.0.x"
@@ -32,13 +32,13 @@ def test_release_versions_are_synchronized():
     assert f'#define MyAppVersion "{version}"' in iss
     assert f"name: SP-AI-Assistant-Setup-{version}" in workflow
     assert f"SP_AI_Assistant_Setup_{{#MyAppVersion}}" in iss
-    assert "SP_AI_Assistant_Setup_0.5.0.sha256" in workflow
+    assert "SP_AI_Assistant_Setup_0.5.1.sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
 
 
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.5.0"' in iss
+    assert '#define MyAppVersion "0.5.1"' in iss
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
     assert 'Source: "..\\plugin\\core\\*"' in iss
@@ -308,6 +308,23 @@ def test_browser_and_persistent_dock():
     assert "back()" in browser and "forward()" in browser
     assert "embedded_browser" in manifest["capabilities"]
     assert "persistent_dock_layout" in manifest["capabilities"]
+
+
+def test_browser_in_panel_reader_mode():
+    browser = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(encoding="utf-8")
+    dock = (ROOT / "plugin" / "ui" / "assistant_dock.py").read_text(encoding="utf-8")
+    # Quick-launch site chips removed per user request.
+    assert "QUICK_LINKS" not in browser
+    assert "chatgpt.com" not in browser
+    # In-panel search & reader mode: never falls back to the system browser.
+    assert "ReaderPanel" in browser
+    assert "_search_bing_rss" in browser
+    assert "format=rss" in browser
+    assert "anchorClicked" in browser
+    assert "load_search" in browser and "load_url" in browser
+    assert "threading.Thread" in browser
+    # Dock listens to the unified url_changed signal for persistence.
+    assert "url_changed.connect" in dock
 
 
 def test_collapsible_chatgpt_style_side_browser():

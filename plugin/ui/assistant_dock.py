@@ -55,7 +55,7 @@ class CollapsibleBrowser(QtWidgets.QWidget):
             str(self._settings.value("browser/expanded", "true")).lower()
             in {"false", "0", "no"}
         )
-        self.browser.view.urlChanged.connect(self._remember_url) if self.browser.view is not None else None
+        self.browser.url_changed.connect(self._remember_url)
 
     def is_collapsed(self):
         return self._collapsed
@@ -91,7 +91,7 @@ class CollapsibleBrowser(QtWidgets.QWidget):
 class AssistantDock(QtWidgets.QWidget):
     """Single dock: chat on the left, collapsible ChatGPT-style browser on the right."""
 
-    def __init__(self, version_text="0.5.0"):
+    def __init__(self, version_text="0.5.1"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
