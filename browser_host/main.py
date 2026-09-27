@@ -1971,13 +1971,6 @@ def main():
 
     os.makedirs(os.path.dirname(state_file), exist_ok=True)
     window = BrowserWindow(state_file, start_url)
-    # This process is later reparented into Painter.  Make the Qt window a
-    # borderless sub-window from the start so Qt does not restore top-level
-    # window semantics after Win32 SetParent.
-    window.setWindowFlags(
-        QtCore.Qt.WindowType.FramelessWindowHint
-        | QtCore.Qt.WindowType.SubWindow
-    )
     window.show()
     sys.exit(app.exec())
 
