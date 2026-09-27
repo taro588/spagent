@@ -40,6 +40,7 @@ Command file (<state-file>.cmd, polled every 800 ms):
 
 from __future__ import annotations
 
+import ctypes
 import html as _html
 import json
 import os
@@ -50,6 +51,23 @@ from urllib.parse import parse_qs, quote
 
 from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
 from PySide6 import QtWebEngineCore, QtWebEngineWidgets
+
+def _enable_windows_dpi_awareness():
+    """Use one DPI coordinate model for the cross-process embedded HWND."""
+    if os.name != "nt":
+        return
+    try:
+        user32 = ctypes.windll.user32
+        set_ctx = getattr(user32, "SetProcessDpiAwarenessContext", None)
+        if set_ctx is not None:
+            set_ctx(ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+            return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_DPI_AWARE
+    except Exception:
+        pass
 
 APP_NAME = "SP AI Browser"
 HOST_VERSION = "1.5"
@@ -1936,6 +1954,7 @@ class BrowserWindow(QtWidgets.QMainWindow):
 
 
 def main():
+    _enable_windows_dpi_awareness()
     state_file = STATE_DEFAULT
     start_url = ""
     args = sys.argv[1:]
