@@ -133,6 +133,10 @@ def main():
 
             if not host_embed.embed(child, parent):
                 raise AssertionError("host_embed.embed failed")
+            # embed() normalizes the child style/parent first; sync_geometry()
+            # is the same second half used by the real plugin immediately
+            # after embedding.
+            host_embed.sync_geometry(child, parent)
             assert_full(parent, child, "initial")
 
             user32.MoveWindow(parent, 100, 100, 1100, 820, True)
