@@ -12,7 +12,7 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.6.3"
+    assert data["version"] == "0.6.4"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["max_tested_painter_version"] == "11.0.x"
@@ -32,13 +32,13 @@ def test_release_versions_are_synchronized():
     assert f'#define MyAppVersion "{version}"' in iss
     assert f"name: SP-AI-Assistant-Setup-{version}" in workflow
     assert f"SP_AI_Assistant_Setup_{{#MyAppVersion}}" in iss
-    assert "SP_AI_Assistant_Setup_0.6.3.sha256" in workflow
+    assert "SP_AI_Assistant_Setup_0.6.4.sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
 
 
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.6.3"' in iss
+    assert '#define MyAppVersion "0.6.4"' in iss
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
     assert 'Source: "..\\plugin\\core\\*"' in iss
@@ -362,7 +362,7 @@ def test_browser_chatgpt_desktop_ui():
 
 
 def test_settings_panel_card_redesign():
-    """0.6.3: the ⚙ settings page uses scrollable GPT-style cards."""
+    """0.6.4: the ⚙ settings page uses scrollable GPT-style cards."""
     dock = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
     assert "SPAI_Card" in dock and "QScrollArea" in dock
     for title in ("模型连接", "材质工作流", "自动化与权限", "诊断与维护"):
@@ -400,7 +400,7 @@ def test_browser_app_window_mode():
 
 
 def test_browser_host_mode_real_chromium():
-    """0.6.3: real embedded Chromium browser via the browser_host process."""
+    """0.6.4: real embedded Chromium browser via the browser_host process."""
     browser = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(encoding="utf-8")
     embed = (ROOT / "plugin" / "ui" / "host_embed.py").read_text(encoding="utf-8")
     entry = (ROOT / "plugin" / "sp_ai_assistant.py").read_text(encoding="utf-8")
@@ -416,26 +416,34 @@ def test_browser_host_mode_real_chromium():
     # Cross-process embedding uses Win32 SetParent (pure ctypes).
     assert "SetParent" in embed and "WS_CHILD" in embed
     assert "sync_geometry" in embed and "set_visible" in embed
-    # 0.6.3: popups positioned via native ClientToScreen so they follow the
+    # 0.6.4: popups positioned via native ClientToScreen so they follow the
     # plugin window even after external SetParent embedding.
     host = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
     assert "_native_global" in host and "ClientToScreen" in host
     assert "_exec_centered" in host
-    # 0.6.3 black-box fix: geometry sync is position-aware and the host
+    # 0.6.4 black-box fix: geometry sync is position-aware and the host
     # re-embeds itself when the placeholder's native window changes.
-    assert "ClientToScreen" in embed and "parent_hwnd_of" in embed
+    assert "RedrawWindow" in embed and "parent_hwnd_of" in embed
+    assert "SetProcessDpiAwarenessContext" in host or "SetProcessDpiAwareness" in host
     assert "_parent_is_placeholder" in browser and "_try_embed" in browser
     assert "def resync" in browser and "installEventFilter" in browser
     assert "resync_host" in browser
-    # 0.6.3: expanding the collapsed pane re-syncs the embedded window.
+    # 0.6.4: expanding the collapsed pane re-syncs the embedded window.
     assert "_resync_host" in assistant
     # Plugin unload terminates the host process.
     assert "shutdown_browser" in entry and "shutdown_browser" in assistant
     assert "embedded_chromium_browser" in manifest["capabilities"]
 
 
+def test_windows_embed_smoke_test_present():
+    smoke = (ROOT / "tests" / "windows_embed_smoke.py").read_text(encoding="utf-8")
+    assert "SetParent" in smoke or "host_embed.embed" in smoke
+    assert "MoveWindow" in smoke and "assert_full" in smoke
+    assert "GetWindowDpiAwarenessContext" in smoke
+
+
 def test_browser_host_app_and_ci_packaging():
-    """0.6.3: browser host app is a full QtWebEngine browser, built and shipped by CI."""
+    """0.6.4: browser host app is a full QtWebEngine browser, built and shipped by CI."""
     host_app = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "build-installer.yml").read_text(encoding="utf-8")
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
