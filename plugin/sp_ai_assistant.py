@@ -10,7 +10,7 @@ from core.qt_compat import qt_modules
 _widgets = []
 _dock = None
 _menu_actions = []
-PLUGIN_VERSION = "0.6.2"
+PLUGIN_VERSION = "0.6.3"
 MIN_PAINTER_VERSION = (7, 2, 0)
 
 
