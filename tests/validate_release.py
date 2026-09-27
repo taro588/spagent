@@ -12,7 +12,7 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.5.1"
+    assert data["version"] == "0.5.2"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["max_tested_painter_version"] == "11.0.x"
@@ -32,13 +32,13 @@ def test_release_versions_are_synchronized():
     assert f'#define MyAppVersion "{version}"' in iss
     assert f"name: SP-AI-Assistant-Setup-{version}" in workflow
     assert f"SP_AI_Assistant_Setup_{{#MyAppVersion}}" in iss
-    assert "SP_AI_Assistant_Setup_0.5.1.sha256" in workflow
+    assert "SP_AI_Assistant_Setup_0.5.2.sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
 
 
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.5.1"' in iss
+    assert '#define MyAppVersion "0.5.2"' in iss
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
     assert 'Source: "..\\plugin\\core\\*"' in iss
@@ -338,6 +338,40 @@ def test_collapsible_chatgpt_style_side_browser():
     assert "set_collapsed" in assistant
     assert "collapse_requested" in browser
     assert "collapsible_side_browser" in manifest["capabilities"]
+
+
+def test_browser_chatgpt_desktop_ui():
+    browser = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(encoding="utf-8")
+    # ChatGPT-desktop-style tab strip: tabs, close buttons and a new-tab button.
+    assert "_TabBar" in browser and "setTabsClosable" in browser
+    assert "新标签页" in browser
+    assert "def new_tab" in browser
+    # GPT-style home page rendered inside the panel.
+    assert "开始浏览" in browser and "输入 URL 以打开页面" in browser
+    # Centered address bar like the ChatGPT desktop browser.
+    assert "搜索或输入网址" in browser
+
+
+def test_browser_reader_renders_images_and_bypasses_403():
+    browser = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(encoding="utf-8")
+    # Browser-like request headers so sites stop answering 403 to the plugin.
+    assert '"Accept"' in browser and "Chrome/126" in browser
+    # Article images are downloaded and embedded as inline QTextDocument resources.
+    assert "_download_images" in browser
+    assert "addResource" in browser
+    assert "ImageResource" in browser
+    # Structured readable HTML (headings/links), not a wall of plain text.
+    assert "_ReadableHTML" in browser
+    # Forward history support like a real browser.
+    assert "go_forward" in browser and "can_forward" in browser
+
+
+def test_browser_app_window_mode():
+    browser = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(encoding="utf-8")
+    # Full-fidelity app-window mode via installed Edge/Chrome (--app=URL).
+    assert "open_app_window" in browser
+    assert "--app=" in browser
+    assert "msedge.exe" in browser and "chrome.exe" in browser
 
 
 def test_all_providers_keep_full_model_capabilities():

@@ -4,10 +4,12 @@ import html as html_module
 import json
 import os
 import re
+import subprocess
 import threading
 import urllib.request
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
+from urllib.parse import quote, urljoin
 
 from core.qt_compat import qt_modules
 
@@ -24,12 +26,23 @@ except Exception:
     WEB_ENGINE_AVAILABLE = False
 
 HOME_URL = "https://www.bing.com"
-SEARCH_SUGGESTIONS = "在插件内搜索，例如：Substance 3D Painter smart material 教程"
-_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-)
-_FETCH_TIMEOUT = 15
+FETCH_TIMEOUT = 15
+_MAX_IMAGES = 18
+_MAX_IMAGE_BYTES = 3 * 1024 * 1024
+_MAX_TEXT = 30000
+
+# Browser-like request headers: many sites (e.g. photo portals) answer a bare
+# urllib request with 403; sending a full Chrome header set fixes most of them.
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "identity",
+    "Connection": "close",
+}
 
 _persistent_profile_ready = False
 
@@ -56,11 +69,13 @@ def _prepare_persistent_profile():
         pass
 
 
-def _http_get(url):
-    """Blocking GET returning decoded text; designed for worker threads."""
-    request = urllib.request.Request(url, headers={"User-Agent": _UA})
-    with urllib.request.urlopen(request, timeout=_FETCH_TIMEOUT) as response:
+def _http_get(url, binary=False):
+    """Blocking GET with browser-like headers; designed for worker threads."""
+    request = urllib.request.Request(url, headers=_HEADERS)
+    with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT) as response:
         raw = response.read()
+    if binary:
+        return raw
     for encoding in ("utf-8", "gb18030"):
         try:
             return raw.decode(encoding)
@@ -71,7 +86,6 @@ def _http_get(url):
 
 def _search_bing_rss(query):
     """Bing RSS search: plain XML, works without JavaScript, reachable in CN."""
-    from urllib.parse import quote
     xml_text = _http_get("https://www.bing.com/search?format=rss&q=" + quote(query))
     root = ET.fromstring(xml_text.encode("utf-8"))
     results = []
@@ -84,152 +98,299 @@ def _search_bing_rss(query):
     return results
 
 
-class _ReadableText(HTMLParser):
-    """Extract readable text and links from an HTML page (stdlib only)."""
+class _ReadableHTML(HTMLParser):
+    """Convert an HTML page into a small safe subset (text/links/images)
+    that QTextBrowser can render, preserving headings, paragraphs and images
+    so pages look like articles instead of a wall of plain text."""
 
-    _SKIP = {"script", "style", "noscript", "svg", "head"}
-    _BLOCK = {"p", "div", "section", "article", "li", "tr", "br", "h1", "h2", "h3", "h4", "h5", "h6", "table", "ul", "ol", "blockquote", "pre"}
+    _SKIP = {"script", "style", "noscript", "svg", "head", "iframe", "form",
+             "button", "input", "select", "video", "audio", "canvas"}
+    _SKIP_ALL = {"nav", "header", "footer", "aside"}
+    _BLOCK = {"p", "div", "section", "article", "li", "tr", "table", "ul", "ol",
+              "blockquote", "pre", "figcaption", "dl", "dd", "dt"}
+    _HEADINGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
 
-    def __init__(self):
+    def __init__(self, base_url):
         super().__init__(convert_charrefs=True)
+        self.base = base_url
         self._skip_depth = 0
+        self._skip_all_depth = 0
+        self._link_href = None
         self._parts = []
-        self._link = None
-        self.links = []
+        self.images = []
+
+    def _emit(self, text):
+        if text:
+            self._parts.append(text)
 
     def handle_starttag(self, tag, attrs):
+        attr = dict(attrs)
         if tag in self._SKIP:
             self._skip_depth += 1
             return
-        if self._skip_depth:
+        if tag in self._SKIP_ALL:
+            self._skip_all_depth += 1
+            return
+        if self._skip_depth or self._skip_all_depth:
             return
         if tag == "a":
-            href = dict(attrs).get("href") or ""
-            if href.startswith("http"):
-                self._link = href
-        if tag in ("h1", "h2", "h3"):
-            self._parts.append("\n\n")
-        elif tag in self._BLOCK or tag in ("pre",):
-            self._parts.append("\n")
+            href = attr.get("href") or ""
+            self._link_href = urljoin(self.base, href) if href.startswith(("http", "/", "./")) else None
+            if self._link_href:
+                self._emit("<a href='%s'>" % html_module.escape(self._link_href, quote=True))
+        elif tag in self._HEADINGS:
+            self._emit("\n<h%d>" % self._HEADINGS[tag])
+        elif tag == "br":
+            self._emit("<br>")
+        elif tag == "img":
+            src = attr.get("src") or attr.get("data-src") or attr.get("data-original") or ""
+            if src and not src.startswith("data:"):
+                absolute = urljoin(self.base, src)
+                if absolute.startswith("http") and absolute not in self.images:
+                    self.images.append(absolute)
+                    self._emit("<br><img src='%s'><br>" % html_module.escape(absolute, quote=True))
+        elif tag == "li":
+            self._emit("\n• ")
+        elif tag in self._BLOCK or tag in ("tr",):
+            self._emit("\n")
 
     def handle_endtag(self, tag):
         if tag in self._SKIP:
             self._skip_depth = max(0, self._skip_depth - 1)
             return
-        if self._skip_depth:
+        if tag in self._SKIP_ALL:
+            self._skip_all_depth = max(0, self._skip_all_depth - 1)
             return
-        if tag == "a" and self._link is not None:
-            self._link = None
-        if tag in ("h1", "h2", "h3", "h4"):
-            self._parts.append("\n\n")
-        elif tag in self._BLOCK or tag in ("pre",):
-            self._parts.append("\n")
+        if self._skip_depth or self._skip_all_depth:
+            return
+        if tag == "a" and self._link_href is not None:
+            self._emit("</a>")
+            self._link_href = None
+        elif tag in self._HEADINGS:
+            self._emit("</h%d>\n" % self._HEADINGS[tag])
+        elif tag in self._BLOCK:
+            self._emit("\n")
 
     def handle_data(self, data):
-        if self._skip_depth:
+        if self._skip_depth or self._skip_all_depth:
             return
-        text = data.strip()
-        if not text:
-            return
-        self._parts.append(text + " ")
-        if self._link is not None:
-            self.links.append({"text": text[:80], "href": self._link})
+        text = re.sub(r"\s+", " ", data)
+        if text.strip():
+            self._emit(html_module.escape(text))
 
     def result(self):
-        text = "".join(self._parts)
-        text = re.sub(r"[ \t]+", " ", text)
-        text = re.sub(r"\n\s*\n+", "\n\n", text)
-        return text.strip()
+        body = "".join(self._parts)
+        body = re.sub(r"\n\s*\n+", "\n", body)
+        body = re.sub(r"(<br>\s*){3,}", "<br>", body)
+        return body.strip()[:_MAX_TEXT]
 
 
 def _extract_readable(url, raw_html):
-    parser = _ReadableText()
-    parser.feed(raw_html)
-    body = parser.result()
+    parser = _ReadableHTML(url)
+    try:
+        parser.feed(raw_html)
+        parser.close()
+    except Exception:
+        pass
     title_match = re.search(r"<title[^>]*>(.*?)</title>", raw_html, re.S | re.I)
     title = html_module.unescape(title_match.group(1)).strip() if title_match else url
-    return {"title": title, "url": url, "text": body, "links": parser.links}
+    return {"title": title[:120] or url, "url": url, "body": parser.result(), "images": parser.images}
+
+
+def _download_images(urls):
+    """Download article images off-thread; returns {url: QImage or None}."""
+    images = {}
+    for src in urls[:_MAX_IMAGES]:
+        try:
+            raw = _http_get(src, binary=True)
+            if len(raw) > _MAX_IMAGE_BYTES:
+                continue
+            image = QtGui.QImage()
+            if not image.loadFromData(raw):
+                continue
+            if image.width() < 48 or image.height() < 48:
+                continue
+            images[src] = image
+        except Exception:
+            continue
+    return images
+
+
+def _find_browser_exe():
+    candidates = [
+        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def open_app_window(url):
+    """Open a URL in a Chrome/Edge app window — a real, full-featured browser
+    surface (JS, logins, video) that looks like a desktop application."""
+    url = str(url or "").strip()
+    if not url:
+        return False
+    exe = _find_browser_exe()
+    try:
+        if exe:
+            subprocess.Popen([exe, "--app=" + url])
+            return True
+    except Exception:
+        pass
+    try:
+        import webbrowser
+        webbrowser.open(url)
+        return True
+    except Exception:
+        return False
+
+
+_STYLE = """
+    a { color:#9ec5ff; text-decoration:none; }
+    h1,h2,h3,h4 { color:#f2f3f5; }
+    p { color:#d9dce1; }
+    .snippet { color:#aab1bd; }
+    .meta { color:#6d7480; font-size:11px; }
+"""
+
+_HOME_HTML = (
+    "<style>" + _STYLE + "</style>"
+    "<div align='center' style='margin-top:90px;'>"
+    "<div style='font-size:44px;'>🌐</div>"
+    "<h2 style='color:#f2f3f5;'>开始浏览</h2>"
+    "<div style='color:#8f96a3;'>输入 URL 以打开页面</div>"
+    "<div style='color:#6d7480; margin-top:18px; font-size:11px;'>"
+    "页面正文与图片均在本插件内显示 · 点击 ⧉ 可用应用窗口打开完整网页</div>"
+    "</div>"
+)
 
 
 class ReaderPanel(QtWidgets.QWidget):
-    """In-panel search & reading mode: works without QtWebEngine.
+    """In-panel reading engine: works without QtWebEngine.
 
-    Search results and pages are fetched by the plugin itself and rendered
-    as readable text inside the dock — nothing ever opens the system browser
-    unless the user explicitly clicks "系统浏览器".
+    Search results and pages are fetched by the plugin itself with
+    browser-like headers, rendered as structured HTML (headings, paragraphs,
+    links, images) inside the dock — nothing ever opens the system browser
+    unless the user explicitly clicks ⧉ (app window).
     """
 
     page_changed = QtCore.Signal(str)
+    title_changed = QtCore.Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("SPAI_Reader_Panel")
-        self._history = []
+        self._history = []       # list of (kind, target)
+        self._hindex = -1
         self._loading = False
+        self._fetch_seq = 0
+        self._image_store = {}   # fetch_seq -> {src: QImage}
+        self._image_cache = {}   # page url -> {src: QImage}
+        self._current_html = None
+        self._current_url = ""
         self._build()
 
     def _build(self):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
 
-        self.status = QtWidgets.QLabel("在上方输入关键词搜索，结果直接在插件内阅读")
-        self.status.setStyleSheet("color:#8f96a3; padding:0 2px;")
+        self.status = QtWidgets.QLabel("")
+        self.status.setStyleSheet("color:#8f96a3; padding:0 2px; font-size:11px;")
         layout.addWidget(self.status)
 
         self.content = QtWidgets.QTextBrowser()
         self.content.setOpenLinks(False)
+        self.content.setOpenExternalLinks(False)
         self.content.anchorClicked.connect(self._link_clicked)
         self.content.setStyleSheet(
-            "QTextBrowser { background:#111214; border:none; padding:10px; font-size:13px; }"
-        )
-        default_css = (
-            "a { color:#9ec5ff; text-decoration:none; } "
-            "h1,h2,h3 { color:#f2f3f5; } "
-            ".snippet { color:#aab1bd; } "
-            ".meta { color:#6d7480; font-size:11px; }"
-        )
-        self.content.setHtml(
-            "<style>" + default_css + "</style>"
-            "<div style='color:#8f96a3; margin-top:40px;'>"
-            "<h2 style='color:#f2f3f5;'>插件内搜索</h2>"
-            "输入关键词后按回车，搜索结果与网页正文都会直接显示在这里，"
-            "不会跳转到系统浏览器。<br><br>"
-            "• 点击搜索结果的标题 → 在插件内阅读网页正文<br>"
-            "• 「←」返回上一页 · 「↻」重新加载<br>"
-            "• 「系统浏览器」按钮仅在你想打开完整网页时使用</div>"
+            "QTextBrowser { background:#111214; border:none; padding:12px; font-size:13px; }"
         )
         layout.addWidget(self.content, 1)
+        self.show_home()
 
-    # ---------- public API (mirrors QWebEngineView subset) ----------
+    # ---------- home ----------
+
+    def show_home(self):
+        self._current_html = _HOME_HTML
+        self._current_url = ""
+        self.status.setText("")
+        self.content.setHtml(_HOME_HTML)
+        self.title_changed.emit("新标签页")
+        self.page_changed.emit("")
+
+    def is_home(self):
+        return not self._current_url
+
+    # ---------- public API ----------
 
     def load_search(self, query):
         query = str(query or "").strip()
         if not query or self._loading:
             return
+        self._push_history(("search", query))
         self._run_fetch("search", query)
 
     def load_url(self, url):
         url = str(url or "").strip()
         if not url or self._loading:
             return
+        self._push_history(("page", url))
         self._run_fetch("page", url)
+
+    def _push_history(self, entry):
+        if 0 <= self._hindex < len(self._history) - 1:
+            self._history = self._history[: self._hindex + 1]
+        self._history.append(entry)
+        self._hindex = len(self._history) - 1
+
+    def can_back(self):
+        return self._hindex > 0
+
+    def can_forward(self):
+        return self._hindex < len(self._history) - 1
+
+    def go_back(self):
+        if self._loading or not self.can_back():
+            self.status.setText("没有更早的页面了")
+            return
+        self._hindex -= 1
+        kind, target = self._history[self._hindex]
+        self._run_fetch(kind, target, record=False)
+
+    def go_forward(self):
+        if self._loading or not self.can_forward():
+            self.status.setText("已经在最新页面")
+            return
+        self._hindex += 1
+        kind, target = self._history[self._hindex]
+        self._run_fetch(kind, target, record=False)
+
+    def reload_current(self):
+        if self._loading:
+            return
+        if 0 <= self._hindex < len(self._history):
+            kind, target = self._history[self._hindex]
+            self._run_fetch(kind, target, record=False)
+        else:
+            self.show_home()
 
     # ---------- fetching ----------
 
-    def _run_fetch(self, kind, target):
-        if kind == "page":
-            self._history.append(("page", target))
-        else:
-            self._history.append(("search", target))
+    def _run_fetch(self, kind, target, record=True):
         self._loading = True
+        self._fetch_seq += 1
+        seq = self._fetch_seq
         self.status.setText("正在加载……")
-        self.page_changed.emit(target if kind == "page" else "搜索：" + target)
-
-        worker = {
-            "kind": kind,
-            "target": target,
-        }
+        if kind == "page":
+            self.page_changed.emit(target)
+            self.title_changed.emit("加载中…")
 
         def task():
             try:
@@ -238,12 +399,16 @@ class ReaderPanel(QtWidgets.QWidget):
                     payload = ("ok", "search", target, results)
                 else:
                     raw = _http_get(target)
-                    payload = ("ok", "page", target, _extract_readable(target, raw))
+                    page = _extract_readable(target, raw)
+                    images = _download_images(page.pop("images", []))
+                    self._image_store[seq] = images
+                    self._image_cache[target] = images
+                    payload = ("ok", "page", target, page)
             except Exception as exc:
                 payload = ("error", kind, target, f"{type(exc).__name__}: {exc}")
             QtCore.QMetaObject.invokeMethod(
                 self, "_apply_result", QtCore.Qt.ConnectionType.QueuedConnection,
-                QtCore.Q_ARG(str, json.dumps(payload, ensure_ascii=False, default=str)),
+                QtCore.Q_ARG(str, json.dumps((seq, payload), ensure_ascii=False, default=str)),
             )
 
         threading.Thread(target=task, daemon=True).start()
@@ -252,33 +417,75 @@ class ReaderPanel(QtWidgets.QWidget):
     def _apply_result(self, encoded):
         self._loading = False
         try:
-            state, kind, target, data = json.loads(encoded)
+            seq, (state, kind, target, data) = json.loads(encoded)
         except Exception:
             self.status.setText("✗ 结果解析失败")
             return
         if state != "ok":
-            self.status.setText("✗ 加载失败（网络受限或站点不可达）")
-            self.content.setHtml(
-                "<div style='color:#e8a0a0;'><b>加载失败</b></div>"
-                f"<div style='color:#aab1bd; margin-top:8px;'>{html_module.escape(str(data))}</div>"
-                "<div style='color:#8f96a3; margin-top:12px;'>"
-                "可尝试：更换关键词重新搜索，或稍后重试。</div>"
-            )
+            self._render_error(target, str(data))
             return
-
         if kind == "search":
             self._render_results(target, data)
         else:
-            self._render_page(target, data)
+            images = self._image_store.pop(seq, {})
+            self._render_page(target, data, images)
+
+    # ---------- rendering ----------
+
+    def _set_content(self, html):
+        self._current_html = html
+        document = self.content.document()
+        for src, image in (self._image_cache.get(self._current_url) or {}).items():
+            document.addResource(
+                QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(src), image
+            )
+        self.content.setHtml(html)
+
+    def _register_images(self, url, images):
+        cache = self._image_cache.setdefault(url, {})
+        for src, image in images.items():
+            if image is not None:
+                cache[src] = image
+        self._current_url = url
+        document = self.content.document()
+        for src, image in cache.items():
+            document.addResource(
+                QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(src), image
+            )
+
+    def _render_error(self, target, message):
+        self.status.setText("✗ 加载失败（该站点拒绝了插件内的直接读取）")
+        safe_message = html_module.escape(message[:400])
+        app_link = ""
+        if str(target).startswith("http"):
+            app_link = (
+                "<div style='margin-top:14px;'>"
+                "<a href='spai-app://open?url=%s' style='color:#9ec5ff;'>"
+                "⧉ 用应用窗口打开此网页（完整渲染）</a></div>"
+                % html_module.escape(str(target), quote=True)
+            )
+        self._current_url = str(target) if str(target).startswith("http") else ""
+        self.content.setHtml(
+            "<style>" + _STYLE + "</style>"
+            "<div style='color:#e8a0a0;'><b>加载失败</b></div>"
+            f"<div style='color:#aab1bd; margin-top:8px;'>{safe_message}</div>"
+            "<div style='color:#8f96a3; margin-top:12px;'>该站点限制了程序直接读取。"
+            "可点击下方链接在应用窗口中打开（完整网页体验），或换个来源。</div>"
+            + app_link
+        )
 
     def _render_results(self, query, results):
         self.status.setText(f"✓ 「{query}」共 {len(results)} 条结果，点击标题在插件内阅读")
+        self._current_url = ""
+        self.title_changed.emit("搜索：" + query[:14])
+        self.page_changed.emit("")
         if not results:
             self.content.setHtml(
+                "<style>" + _STYLE + "</style>"
                 "<div style='color:#aab1bd;'>没有找到相关结果，换个关键词试试。</div>"
             )
             return
-        blocks = ["<style>a{color:#9ec5ff;text-decoration:none;} .snippet{color:#aab1bd;} .meta{color:#6d7480;font-size:11px;}</style>"]
+        blocks = ["<style>" + _STYLE + "</style>"]
         for index, item in enumerate(results, 1):
             safe_title = html_module.escape(item["title"])
             safe_link = html_module.escape(item["link"], quote=True)
@@ -292,47 +499,69 @@ class ReaderPanel(QtWidgets.QWidget):
             )
         self.content.setHtml("".join(blocks))
 
-    def _render_page(self, url, page):
+    def _render_page(self, url, page, images=None):
+        self._register_images(url, images or {})
         title = html_module.escape(page["title"])
-        text = html_module.escape(page["text"][:20000])
-        links = page.get("links") or []
-        seen = set()
-        unique_links = []
-        for link in links:
-            if link["href"] not in seen:
-                seen.add(link["href"])
-                unique_links.append(link)
-        link_html = "".join(
-            f"<div style='margin:4px 0;'><a href='{html_module.escape(link['href'], quote=True)}'>"
-            f"{html_module.escape(link['text'] or link['href'])}</a></div>"
-            for link in unique_links[:40]
-        )
         self.status.setText(f"✓ 已读取 {url}")
-        self.content.setHtml(
-            "<style>a{color:#9ec5ff;text-decoration:none;}</style>"
+        self.title_changed.emit(page["title"][:16] or url[:16])
+        self._set_content(
+            "<style>" + _STYLE + "</style>"
             f"<h2 style='color:#f2f3f5;'>{title}</h2>"
-            f"<div style='color:#6d7480; font-size:11px; margin-bottom:10px;'>{html_module.escape(url)} · 阅读模式</div>"
-            f"<div style='color:#d9dce1; line-height:1.6; white-space:pre-wrap;'>{text}</div>"
-            + (f"<h3 style='color:#f2f3f5; margin-top:20px;'>文中链接</h3>{link_html}" if link_html else "")
+            f"<div style='color:#6d7480; font-size:11px; margin-bottom:10px;'>"
+            f"{html_module.escape(url)} · 插件内阅读</div>"
+            f"<div style='line-height:1.65;'>{page['body']}</div>"
         )
 
     def _link_clicked(self, url):
         target = url.toString()
+        if target.startswith("spai-app://"):
+            from urllib.parse import parse_qs, urlparse
+            real = (parse_qs(urlparse(target).query).get("url") or [""])[0]
+            if real:
+                open_app_window(real)
+            return
         if target.startswith("http"):
             self.load_url(target)
 
-    def go_back(self):
-        if len(self._history) >= 2:
-            self._history.pop()
-            kind, target = self._history.pop()
-            self._run_fetch(kind, target)
-        else:
-            self.status.setText("没有更早的页面了")
+    # ---------- tab snapshots ----------
 
-    def reload_current(self):
-        if self._history:
-            kind, target = self._history[-1]
-            self._run_fetch(kind, target)
+    def snapshot(self):
+        return {
+            "history": list(self._history),
+            "hindex": self._hindex,
+            "html": self._current_html,
+            "url": self._current_url,
+            "status": self.status.text(),
+        }
+
+    def restore(self, snap):
+        self._loading = False
+        self._history = list(snap.get("history") or [])
+        self._hindex = int(snap.get("hindex", -1))
+        self._current_url = str(snap.get("url") or "")
+        html = snap.get("html")
+        if html:
+            self._set_content(html)
+            self.status.setText(str(snap.get("status") or ""))
+            if self._current_url:
+                self.page_changed.emit(self._current_url)
+            else:
+                self.page_changed.emit("")
+        else:
+            self.show_home()
+
+
+class _TabBar(QtWidgets.QTabBar):
+    """ChatGPT-desktop-style tab strip."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SPAI_Browser_Tabs")
+        self.setTabsClosable(True)
+        self.setExpanding(False)
+        self.setDrawBase(False)
+        self.setElideMode(QtCore.Qt.TextElideMode.ElideRight)
+        self.setUsesScrollButtons(True)
 
 
 class BrowserPanel(QtWidgets.QWidget):
@@ -346,42 +575,74 @@ class BrowserPanel(QtWidgets.QWidget):
         self.setWindowTitle("SP AI Browser")
         self.setMinimumSize(380, 320)
         self._home_url = start_url
+        self._tabs = []          # list of dicts: {"title":..., "snap": {...}}
+        self._active = -1
+        self._closing = False
         self._build(start_url)
+
+    # ---------- UI ----------
 
     def _build(self, start_url):
         self.setStyleSheet("""
             QWidget { background:#111214; color:#f2f3f5; }
-            QLineEdit { background:#181a1f; color:#f5f6f7; border:1px solid #30343b; border-radius:10px; padding:7px 10px; }
-            QPushButton { background:#202329; color:#f5f6f7; border:1px solid #343941; border-radius:8px; padding:6px 10px; }
-            QPushButton:hover { background:#292d34; }
+            QLineEdit { background:#181a1f; color:#f5f6f7; border:1px solid #30343b; border-radius:12px; padding:7px 12px; }
+            QPushButton { background:transparent; color:#c8cdd6; border:none; border-radius:8px; padding:6px 9px; }
+            QPushButton:hover { background:#262a31; color:#ffffff; }
+            QTabBar::tab { background:#181a1f; color:#c8cdd6; border:1px solid #262a31;
+                           border-radius:10px; padding:4px 12px; margin-right:5px; }
+            QTabBar::tab:selected { background:#262a31; color:#ffffff; }
+            QTabBar::close-button { image:none; subcontrol-position:right; }
         """)
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
-        bar = QtWidgets.QHBoxLayout()
-        for label, slot in (("←", self._back), ("→", self._forward), ("↻", self._reload), ("⌂", self._home)):
-            b = QtWidgets.QPushButton(label)
-            b.setFixedWidth(34)
-            b.clicked.connect(slot)
-            bar.addWidget(b)
-
-        self.address = QtWidgets.QLineEdit()
-        self.address.setPlaceholderText(SEARCH_SUGGESTIONS)
-        self.address.returnPressed.connect(self._navigate)
-        bar.addWidget(self.address, 1)
-
-        go = QtWidgets.QPushButton("搜索")
-        go.clicked.connect(self._navigate)
-        bar.addWidget(go)
-
-        collapse = QtWidgets.QPushButton("⟩⟩")
-        collapse.setFixedWidth(34)
+        # --- tab strip: [tab][tab][+] ... [collapse] ---
+        strip = QtWidgets.QHBoxLayout()
+        strip.setSpacing(4)
+        self.tab_bar = _TabBar()
+        self.tab_bar.currentChanged.connect(self._on_tab_changed)
+        self.tab_bar.tabCloseRequested.connect(self._on_tab_close)
+        strip.addWidget(self.tab_bar, 1)
+        plus = QtWidgets.QToolButton()
+        plus.setText("＋")
+        plus.setToolTip("新标签页")
+        plus.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        plus.clicked.connect(self.new_tab)
+        strip.addWidget(plus)
+        collapse = QtWidgets.QToolButton()
+        collapse.setText("⟩⟩")
         collapse.setToolTip("收起浏览器侧栏")
         collapse.clicked.connect(self.collapse_requested.emit)
-        bar.addWidget(collapse)
-        root.addLayout(bar)
+        strip.addWidget(collapse)
+        root.addLayout(strip)
 
+        # --- navigation row: ← → ↻  [address]  ⧉ ---
+        nav = QtWidgets.QHBoxLayout()
+        nav.setSpacing(2)
+        for label, slot in (("←", self._back), ("→", self._forward), ("↻", self._reload)):
+            b = QtWidgets.QToolButton()
+            b.setText(label)
+            b.setToolTip({"←": "后退", "→": "前进", "↻": "重新加载"}[label])
+            b.clicked.connect(slot)
+            nav.addWidget(b)
+
+        nav.addStretch(1)
+        self.address = QtWidgets.QLineEdit()
+        self.address.setPlaceholderText("搜索或输入网址")
+        self.address.setFixedWidth(300)
+        self.address.returnPressed.connect(self._navigate)
+        nav.addWidget(self.address)
+        nav.addStretch(1)
+
+        app_btn = QtWidgets.QToolButton()
+        app_btn.setText("⧉")
+        app_btn.setToolTip("用应用窗口打开当前网页（完整渲染）")
+        app_btn.clicked.connect(self._open_in_app)
+        nav.addWidget(app_btn)
+        root.addLayout(nav)
+
+        # --- content ---
         if WEB_ENGINE_AVAILABLE:
             _prepare_persistent_profile()
             self.view = QtWebEngineWidgets.QWebEngineView()
@@ -389,13 +650,76 @@ class BrowserPanel(QtWidgets.QWidget):
             root.addWidget(self.view, 1)
             self.view.setUrl(QtCore.QUrl(start_url))
             self._mode = "web"
+            self.reader = None
         else:
             self.view = None
             self._mode = "reader"
             self.reader = ReaderPanel()
             self.reader.page_changed.connect(self._on_reader_url)
+            self.reader.title_changed.connect(self._on_reader_title)
             root.addWidget(self.reader, 1)
             self.address.setText("")
+
+        if self._mode == "reader":
+            self._new_tab_state(silent=True)
+
+    # ---------- tabs ----------
+
+    def _new_tab_state(self, silent=False):
+        snap = {"history": [], "hindex": -1, "html": None, "url": "", "status": ""}
+        self._tabs.append({"title": "新标签页", "snap": snap})
+        index = self.tab_bar.addTab("新标签页")
+        self.tab_bar.setCurrentIndex(index)
+        if silent:
+            self.reader.show_home()
+
+    def new_tab(self):
+        if self._mode != "reader":
+            return
+        self._new_tab_state()
+
+    def _on_tab_close(self, index):
+        if self._mode != "reader":
+            return
+        if self.tab_bar.count() <= 1:
+            # last tab: just reset to a fresh home
+            self.reader.show_home()
+            self._tabs[index] = {"title": "新标签页", "snap": self.reader.snapshot()}
+            self.tab_bar.setTabText(index, "新标签页")
+            return
+        self._closing = True
+        try:
+            self.tab_bar.removeTab(index)
+        finally:
+            self._closing = False
+        self._tabs.pop(index)
+        self._active = min(self.tab_bar.currentIndex(), len(self._tabs) - 1)
+        self.reader.restore(self._tabs[self._active]["snap"])
+
+    def _on_tab_changed(self, index):
+        if self._mode != "reader" or self._closing:
+            return
+        if index < 0 or index >= len(self._tabs):
+            return
+        # save outgoing tab
+        if 0 <= self._active < len(self._tabs) and self._active != index:
+            self._tabs[self._active]["snap"] = self.reader.snapshot()
+        self._active = index
+        self.reader.restore(self._tabs[index]["snap"])
+
+    def _current_index(self):
+        return self._active if self._mode == "reader" else -1
+
+    def _on_reader_title(self, title):
+        index = self._current_index()
+        if 0 <= index < len(self._tabs):
+            self._tabs[index]["title"] = title
+            self.tab_bar.setTabText(index, title)
+
+    def _save_current_tab(self):
+        index = self._current_index()
+        if 0 <= index < len(self._tabs):
+            self._tabs[index]["snap"] = self.reader.snapshot()
 
     # ---------- url plumbing ----------
 
@@ -404,9 +728,10 @@ class BrowserPanel(QtWidgets.QWidget):
         self.url_changed.emit(url.toString())
 
     def _on_reader_url(self, text):
-        if text.startswith("http"):
-            self.address.setText(text)
+        self.address.setText(text if text else "")
+        if text:
             self.url_changed.emit(text)
+            self._save_current_tab()
 
     # ---------- navigation ----------
 
@@ -418,7 +743,6 @@ class BrowserPanel(QtWidgets.QWidget):
             return value
         if re.match(r"^[\w.-]+\.[a-zA-Z]{2,}(/|$)", value):
             return "https://" + value
-        from urllib.parse import quote
         return "https://www.bing.com/search?q=" + quote(value)
 
     def navigate_to(self, url):
@@ -455,6 +779,8 @@ class BrowserPanel(QtWidgets.QWidget):
     def _forward(self):
         if self._mode == "web" and self.view is not None:
             self.view.forward()
+        elif self._mode == "reader":
+            self.reader.go_forward()
 
     def _reload(self):
         if self._mode == "web" and self.view is not None:
@@ -467,18 +793,14 @@ class BrowserPanel(QtWidgets.QWidget):
             self.navigate_to(self._home_url)
         else:
             self.address.clear()
-            self.status_home()
+            self.reader.show_home()
 
-    def status_home(self):
-        self.reader._history.clear()
-        self.reader.status.setText("在上方输入关键词搜索，结果直接在插件内阅读")
-        self.reader.content.setHtml(
-            "<style>a { color:#9ec5ff; text-decoration:none; }</style>"
-            "<div style='color:#8f96a3; margin-top:40px;'>"
-            "<h2 style='color:#f2f3f5;'>插件内搜索</h2>"
-            "输入关键词后按回车，搜索结果与网页正文都会直接显示在这里，"
-            "不会跳转到系统浏览器。</div>"
-        )
+    def _open_in_app(self):
+        url = self.current_url()
+        if not url and self._mode == "reader":
+            url = self.reader._current_url
+        if url:
+            open_app_window(url)
 
 
 def build_browser_panel():

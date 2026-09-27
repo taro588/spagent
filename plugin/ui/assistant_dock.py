@@ -80,7 +80,8 @@ class CollapsibleBrowser(QtWidgets.QWidget):
         if self._building:
             return
         try:
-            self._settings.setValue("browser/url", url.toString())
+            text = url.toString() if hasattr(url, "toString") else str(url or "")
+            self._settings.setValue("browser/url", text)
         except Exception:
             pass
 
@@ -91,7 +92,7 @@ class CollapsibleBrowser(QtWidgets.QWidget):
 class AssistantDock(QtWidgets.QWidget):
     """Single dock: chat on the left, collapsible ChatGPT-style browser on the right."""
 
-    def __init__(self, version_text="0.5.1"):
+    def __init__(self, version_text="0.5.2"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
