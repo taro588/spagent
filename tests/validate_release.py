@@ -438,7 +438,7 @@ def test_browser_host_mode_real_chromium():
 def test_windows_embed_smoke_test_present():
     smoke = (ROOT / "tests" / "windows_embed_smoke.py").read_text(encoding="utf-8")
     assert "SetParent" in smoke or "host_embed.embed" in smoke
-    assert "MoveWindow" in smoke and "assert_full" in smoke
+    assert "resize(" in smoke and "assert_full" in smoke
     assert "GetWindowDpiAwarenessContext" in smoke
 
 
