@@ -89,21 +89,22 @@ def embed(child_hwnd: int, parent_hwnd: int) -> bool:
         # SetParent returns the *previous* parent HWND.  A top-level
         # browser has no previous parent, so a successful call legitimately
         # returns NULL.  Do not treat that NULL return value as failure.
-        # Qt can still be finalizing the top-level HWND while the state
-        # file becomes visible.  Re-parent verification is therefore retried
-        # briefly instead of treating that startup race as a hard failure.
-        for _attempt in range(3):
-            user32.SetParent(child, parent)
-            if int(user32.GetParent(child) or 0) == int(parent):
-                user32.SetWindowPos(
-                    child, None, 0, 0, 0, 0,
-                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
-                )
-                user32.ShowWindow(child, SW_SHOW)
-                return True
-            if _attempt < 2:
-                ctypes.windll.kernel32.Sleep(20)
-        return False
+        # SetParent returns the previous parent HWND.  A top-level window
+        # normally has no previous parent, so NULL is a valid success result.
+        # The Win32 contract requires GetLastError() to distinguish NULL
+        # success from failure.
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetLastError(0)
+        previous_parent = user32.SetParent(child, parent)
+        last_error = int(kernel32.GetLastError())
+        if not previous_parent and last_error:
+            return False
+        user32.SetWindowPos(
+            child, None, 0, 0, 0, 0,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+        )
+        user32.ShowWindow(child, SW_SHOW)
+        return True
     except Exception:
         return False
 
