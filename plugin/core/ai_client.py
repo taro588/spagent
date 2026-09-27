@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 
 
-AI_CLIENT_BUILD = "0.6.0"
+AI_CLIENT_BUILD = "0.6.3"
 
 PROVIDERS = {
     "OpenAI": {
@@ -126,6 +126,7 @@ class AIError(RuntimeError):
 # Metadata of the most recent chat() call: token usage reported by the
 # provider (normalized keys), plus the model that actually answered.
 LAST_USAGE = {}
+LAST_WEB_RESULTS = {"query": "", "results": [], "images": []}
 
 
 def _record_usage(data):
@@ -153,17 +154,51 @@ def web_search(query, max_results=5):
     return _web_search(query, max_results)
 
 
-def _web_search(query, max_results=5):
-    """Provider-independent lightweight web search for non-OpenAI providers."""
+def _bing_image_search(query, max_results=6):
+    """Return image-search candidates alongside normal web results."""
     import html
     import re
     from urllib.parse import quote
+    url = "https://www.bing.com/images/search?q=" + quote(str(query)) + "&form=HDRSC2&first=1"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 Chrome/126 Safari/537.36 SP-AI-Assistant/0.6",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except Exception:
+        return []
+    images = []
+    seen = set()
+    for match in re.finditer(r'"murl":"(.*?)".*?"turl":"(.*?)"', raw, flags=re.S):
+        image_url = html.unescape(match.group(1)).replace("\\/", "/")
+        thumb_url = html.unescape(match.group(2)).replace("\\/", "/")
+        if not image_url.startswith(("http://", "https://")) or image_url in seen:
+            continue
+        seen.add(image_url)
+        images.append({"url": image_url, "thumbnail": thumb_url, "title": ""})
+        if len(images) >= max_results:
+            break
+    return images
+
+
+def _web_search(query, max_results=5):
+    """Provider-independent web search with source + image metadata."""
+    import html
+    import re
+    from urllib.parse import quote
+    global LAST_WEB_RESULTS
     query = str(query or "").strip()
     if not query:
         raise AIError("web_search 的 query 不能为空")
     limit = max(1, min(int(max_results or 5), 8))
     url = "https://www.bing.com/search?q=" + quote(query) + "&format=rss"
-    request = urllib.request.Request(url, headers={"User-Agent": "SP-AI-Assistant/0.4"})
+    request = urllib.request.Request(url, headers={"User-Agent": "SP-AI-Assistant/0.6"})
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             raw = response.read().decode("utf-8", errors="replace")
@@ -178,7 +213,60 @@ def _web_search(query, max_results=5):
         title, link, desc = tag("title"), tag("link"), tag("description")
         if title and link:
             results.append({"title": title, "url": link, "snippet": desc})
-    return {"query": query, "results": results}
+    payload = {"query": query, "results": results, "images": _bing_image_search(query, min(6, limit + 1))}
+    LAST_WEB_RESULTS = payload
+    return payload
+
+
+def web_image_search(query, max_results=6):
+    """Explicit image search helper for visual references/materials."""
+    global LAST_WEB_RESULTS
+    query = str(query or "").strip()
+    if not query:
+        raise AIError("web_image_search 的 query 不能为空")
+    images = _bing_image_search(query, max_results)
+    LAST_WEB_RESULTS = {"query": query, "results": [], "images": images}
+    return LAST_WEB_RESULTS
+
+
+def official_api_test(provider_name: str, model: str, api_key: str, base_url: str = "") -> dict:
+    """Minimal provider-native API request, without Painter tools or web tools."""
+    info = PROVIDERS.get(provider_name)
+    if not info:
+        raise AIError("未知 AI 提供商")
+    if not model:
+        raise AIError("尚未设置模型")
+    if not api_key and info["id"] != "openai_compatible":
+        raise AIError("尚未设置 API Key")
+    base = (base_url or info["base_url"]).strip().rstrip("/")
+    pid = info["id"]
+    if pid == "openai":
+        data = _post(base + "/responses", {"model": model, "input": "Reply with OK only."},
+                     {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}, timeout=45)
+        text = _extract_openai_responses_text(data)
+    elif pid == "anthropic":
+        data = _post(base + "/v1/messages",
+                     {"model": model, "max_tokens": 16, "messages": [{"role": "user", "content": "Reply with OK only."}]},
+                     {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}, timeout=45)
+        text = "\n".join(str(block.get("text", "")) for block in data.get("content", [])
+                         if isinstance(block, dict) and block.get("type") == "text").strip()
+    elif pid == "gemini":
+        data = _post(base + f"/v1beta/models/{model}:generateContent",
+                     {"contents": [{"parts": [{"text": "Reply with OK only."}]}]},
+                     {"x-goog-api-key": api_key, "Content-Type": "application/json"}, timeout=45)
+        parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+        text = "\n".join(str(p.get("text", "")) for p in parts if isinstance(p, dict) and p.get("text")).strip()
+    else:
+        data = _post(base + "/chat/completions",
+                     {"model": model, "messages": [{"role": "user", "content": "Reply with OK only."}], "temperature": 0},
+                     {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"} if api_key else {"Content-Type": "application/json"},
+                     timeout=45)
+        text = _extract_openai_compatible_content(data)
+    if not text:
+        raise AIError(f"{provider_name} 官方接口返回成功，但没有可读文本。")
+    _record_usage(data)
+    return {"provider": provider_name, "model": model, "endpoint": base, "response": text}
+
 
 def _post(url: str, payload: dict, headers: dict, timeout: int = 90) -> dict:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
