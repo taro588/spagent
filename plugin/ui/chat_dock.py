@@ -7,7 +7,7 @@ import mimetypes
 import time
 
 from core.actions import execute_plan, validate_plan
-from core.ai_client import AI_CLIENT_BUILD, PROVIDERS, LAST_USAGE, chat, web_search
+from core.ai_client import AI_CLIENT_BUILD, PROVIDERS, LAST_USAGE, chat, web_search, official_api_test
 from core.painter_context import prompt_context
 from core.qt_compat import qt_modules
 from core.settings import provider_config, save_provider_config
@@ -40,17 +40,38 @@ HIGH_IMPACT_ACTIONS = {
 class _Worker(QtCore.QObject):
     finished = QtCore.Signal(str, str, dict)
 
-    def __init__(self, provider, model, key, base_url, messages):
+    def __init__(self, provider, model, key, base_url, messages, pre_search_query=""):
         super().__init__()
-        self.args = (provider, model, key, base_url, messages)
+        self.args = (provider, model, key, base_url, messages, pre_search_query)
 
     @QtCore.Slot()
     def run(self):
         started = time.monotonic()
         try:
-            provider, model, key, base_url, messages = self.args
+            provider, model, key, base_url, messages, pre_search_query = self.args
+            if pre_search_query:
+                bundle = web_search(pre_search_query, 6)
+                enriched = list(messages)
+                if enriched and enriched[-1].get("role") == "user":
+                    last = dict(enriched[-1])
+                    content = last.get("content", "")
+                    search_text = (
+                        "\n\n[网页搜索补充数据]\n" +
+                        json.dumps(bundle, ensure_ascii=False) +
+                        "\n请结合这些搜索数据回答用户；来源链接应保留，不要把 URL 编造为事实。"
+                    )
+                    if isinstance(content, str):
+                        last["content"] = content + search_text
+                    elif isinstance(content, list):
+                        parts = list(content)
+                        parts.insert(0, {"type": "text", "text": search_text})
+                        last["content"] = parts
+                    enriched[-1] = last
+                    messages = enriched
             text = chat(provider, messages, model, key, base_url)
+            from core.ai_client import LAST_WEB_RESULTS
             meta = dict(LAST_USAGE)
+            meta["web_results"] = dict(LAST_WEB_RESULTS or {})
             meta["elapsed"] = round(time.monotonic() - started, 1)
             meta.setdefault("model", model)
             self.finished.emit("ok", text, meta)
@@ -60,6 +81,32 @@ class _Worker(QtCore.QObject):
                 "model": self.args[1],
                 "provider": self.args[0],
             })
+
+
+class _DirectApiWorker(QtCore.QObject):
+    finished = QtCore.Signal(str, str, dict)
+
+    def __init__(self, provider, model, key, base_url):
+        super().__init__()
+        self.args = (provider, model, key, base_url)
+
+    @QtCore.Slot()
+    def run(self):
+        started = time.monotonic()
+        provider, model, key, base_url = self.args
+        try:
+            result = official_api_test(provider, model, key, base_url)
+            self.finished.emit(
+                "ok",
+                "官方 AI API 直连成功\n" + json.dumps(result, ensure_ascii=False, indent=2),
+                {"elapsed": round(time.monotonic() - started, 1), "provider": provider, "model": model},
+            )
+        except Exception as exc:
+            self.finished.emit(
+                "error",
+                "官方 AI API 直连失败\n" + type(exc).__name__ + ": " + str(exc),
+                {"elapsed": round(time.monotonic() - started, 1), "provider": provider, "model": model},
+            )
 
 
 class ChatDock(QtWidgets.QWidget):
@@ -718,17 +765,35 @@ class ChatDock(QtWidgets.QWidget):
         if self.execution_mode.currentData() == "auto":
             self._auto_execute_if_safe(plan)
     def _official_api_test(self):
-        """Call the official Painter Python API bridge without involving the AI."""
-        test_name = "SP_AI_API_TEST"
-        plan = {"actions": [{"action": "create_fill_layer", "name": test_name}]}
-        try:
-            result = execute_plan(plan)
-            self._last_execution = result
-            self._append("官方 API 测试", "已直接调用 substance_painter.layerstack.insert_fill()。\n" + json.dumps(result, ensure_ascii=False, indent=2))
-            self.status.setText("✓ 官方 Painter Python API 执行成功")
-        except Exception as exc:
-            self._append("官方 API 测试失败", type(exc).__name__ + ": " + str(exc))
-            self.status.setText("✗ 官方 Painter Python API 执行失败")
+        """Test the configured AI provider's official endpoint directly."""
+        self._save()
+        provider = self.provider.currentText()
+        model = self.model.currentText().strip()
+        key = self.key.text().strip()
+        base_url = self.base_url.text().strip()
+        self.status.setText("正在直连官方 AI API……")
+        self._direct_api_thread = QtCore.QThread()
+        self._direct_api_worker = _DirectApiWorker(provider, model, key, base_url)
+        self._direct_api_worker.moveToThread(self._direct_api_thread)
+        self._direct_api_thread.started.connect(self._direct_api_worker.run)
+        self._direct_api_worker.finished.connect(self._official_api_result)
+        self._direct_api_worker.finished.connect(self._direct_api_thread.quit)
+        self._direct_api_thread.finished.connect(self._direct_api_thread_finished)
+        self._direct_api_thread.start()
+
+    @QtCore.Slot(str, str, dict)
+    def _official_api_result(self, state, text, meta=None):
+        self._last_meta = dict(meta or {})
+        self.status.setText("✓ 官方 AI API 直连成功" if state == "ok" else "✗ 官方 AI API 直连失败")
+        self._append("官方 API 直连测试" if state == "ok" else "官方 API 直连错误", text)
+
+    def _direct_api_thread_finished(self):
+        self._direct_api_worker = None
+        thread = self._direct_api_thread
+        self._direct_api_thread = None
+        if thread is not None:
+            thread.deleteLater()
+
     def _clear(self):
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._attachments.clear()
@@ -897,9 +962,9 @@ class ChatDock(QtWidgets.QWidget):
             elapsed = int(time.monotonic() - self._busy_started)
             self.status.setText(f"生成回复中 · 已处理 {elapsed}s")
 
-    def _start_request(self, messages, callback):
+    def _start_request(self, messages, callback, pre_search_query=""):
         if self._thread is not None:
-            self._pending_request = (messages, callback)
+            self._pending_request = (messages, callback, pre_search_query)
             return
 
         provider = self.provider.currentText()
@@ -916,7 +981,7 @@ class ChatDock(QtWidgets.QWidget):
 
         self._set_busy(True)
         self._thread = QtCore.QThread()
-        self._worker = _Worker(provider, model, key, base_url, messages)
+        self._worker = _Worker(provider, model, key, base_url, messages, pre_search_query)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.finished.connect(callback)
@@ -1095,6 +1160,9 @@ class ChatDock(QtWidgets.QWidget):
         if self.web_search_enabled.isChecked():
             search_hint = "\n\n[联网能力已启用：请按需使用当前模型提供商的官方 Web Search 工具；不要用搜索结果替代模型自身推理。]"
         enriched = "当前 Painter 上下文：\n" + context + search_hint + "\n\n用户请求：\n" + text
+        image_terms = r"(图片|图像|配图|参考图|素材图|图片素材|找图|看图|图片参考|image|images|photo|photos|reference)"
+        pre_search_query = text if self.web_search_enabled.isChecked() and __import__("re").search(image_terms, text, __import__("re").I) else ""
+
         if self._attachments:
             content = [{"type": "text", "text": enriched}]
             for item in self._attachments:
@@ -1109,7 +1177,7 @@ class ChatDock(QtWidgets.QWidget):
         else:
             self._messages.append({"role": "user", "content": enriched})
         self._append("你", text)
-        self._start_request(list(self._messages), self._done)
+        self._start_request(list(self._messages), self._done, pre_search_query)
 
     @QtCore.Slot(str, str, dict)
     def _done(self, state, text, meta=None):
@@ -1138,7 +1206,9 @@ class ChatDock(QtWidgets.QWidget):
             if (self.permission_mode.currentData() if hasattr(self, 'permission_mode') else self.execution_mode.currentData()) == 'auto':
                 self._auto_execute_if_safe(plan)
         else:
-            self._append('AI', text)
+            web = (meta or {}).get("web_results") or {}
+            images = [item.get("url") for item in web.get("images", []) if isinstance(item, dict) and item.get("url")]
+            self._append("AI", text, images=images[:6], meta=meta)
             fallback = self._fallback_plan_from_user_request()
             if fallback:
                 self._last_plan = fallback
