@@ -18,6 +18,8 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
+from PySide6 import QtCore, QtWidgets
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "plugin"))
@@ -48,21 +50,17 @@ def enable_dpi():
         pass
 
 
-def create_parent():
-    user32.CreateWindowExW.restype = wintypes.HWND
-    user32.CreateWindowExW.argtypes = [
-        wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
-        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
-        wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
-    ]
-    hwnd = user32.CreateWindowExW(
-        0, "STATIC", "SP AI Embed Smoke Parent",
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        100, 100, 900, 700, None, None, kernel32.GetModuleHandleW(None), None,
-    )
-    if not hwnd:
-        raise RuntimeError("CreateWindowExW failed")
-    return hwnd
+def create_parent(app):
+    widget = QtWidgets.QWidget()
+    widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
+    widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+    widget.setStyleSheet("background:#111214;")
+    widget.resize(900, 700)
+    widget.show()
+    app.processEvents()
+    return widget, int(widget.winId())
+
+
 
 
 def rects(parent, child):
@@ -109,6 +107,7 @@ def main():
         return
 
     enable_dpi()
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     exe = Path(sys.argv[1]).resolve()
     if not exe.is_file():
         raise FileNotFoundError(exe)
@@ -119,7 +118,7 @@ def main():
             [str(exe), "--state-file", str(state), "--start-url", "about:blank"],
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        parent = create_parent()
+        parent_widget, parent = create_parent(app)
         try:
             child = wait_state(state)
             awareness_fn = getattr(user32, "GetWindowDpiAwarenessContext", None)
@@ -137,12 +136,15 @@ def main():
             host_embed.sync_geometry(child, parent)
             assert_full(parent, child, "initial")
 
-            user32.MoveWindow(parent, 100, 100, 1100, 820, True)
+            parent_widget.resize(1100, 820)
+            app.processEvents()
             host_embed.sync_geometry(child, parent)
             assert_full(parent, child, "resized")
 
-            user32.ShowWindow(parent, SW_HIDE)
-            user32.ShowWindow(parent, SW_SHOW)
+            parent_widget.hide()
+            app.processEvents()
+            parent_widget.show()
+            app.processEvents()
             host_embed.sync_geometry(child, parent)
             assert_full(parent, child, "hide-show")
 
@@ -155,7 +157,10 @@ def main():
                 host_embed.set_visible(child, False)
             except Exception:
                 pass
-            user32.DestroyWindow(parent)
+            try:
+                parent_widget.close()
+            except Exception:
+                pass
             try:
                 proc.terminate()
                 proc.wait(timeout=10)
