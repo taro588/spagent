@@ -142,6 +142,15 @@ def main():
             # embed() normalizes the child style/parent first; sync_geometry()
             # is the same second half used by the real plugin immediately
             # after embedding.
+            # QtWebEngine may recreate the native top-level HWND once
+            # after the first cross-process reparent. Mirror the plugin's
+            # recovery path: refresh state and re-embed if the handle changed.
+            time.sleep(1.0)
+            app.processEvents()
+            if not host_embed.is_window(child):
+                child = wait_state(state, timeout=10)
+                if not host_embed.embed(child, parent):
+                    raise AssertionError("re-embed after HWND recreation failed")
             host_embed.sync_geometry(child, parent)
             assert_full(parent, child, "initial")
 
