@@ -122,6 +122,33 @@ PAINTER_ACTION_TOOL = {
 class AIError(RuntimeError):
     pass
 
+
+# Metadata of the most recent chat() call: token usage reported by the
+# provider (normalized keys), plus the model that actually answered.
+LAST_USAGE = {}
+
+
+def _record_usage(data):
+    """Normalize provider-specific usage payloads into LAST_USAGE."""
+    usage = data.get("usage") or data.get("usageMetadata") or {}
+    if not isinstance(usage, dict):
+        return
+    prompt = usage.get("prompt_tokens", usage.get("input_tokens", usage.get("promptTokenCount")))
+    completion = usage.get(
+        "completion_tokens",
+        usage.get("output_tokens", usage.get("candidatesTokenCount")),
+    )
+    total = usage.get("total_tokens", usage.get("totalTokenCount"))
+    if total is None and prompt is not None and completion is not None:
+        total = prompt + completion
+    if prompt is not None:
+        LAST_USAGE["prompt_tokens"] = int(prompt)
+    if completion is not None:
+        LAST_USAGE["completion_tokens"] = int(completion)
+    if total is not None:
+        LAST_USAGE["total_tokens"] = int(total)
+
+
 def web_search(query, max_results=5):
     return _web_search(query, max_results)
 
@@ -312,6 +339,7 @@ def _openai_responses(messages, model, api_key, base_url):
         payload,
         {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
     )
+    _record_usage(data)
 
     # Responses API returns a function_call item when the model decides to
     # operate Painter. The plugin executes that allow-listed plan locally
@@ -341,6 +369,7 @@ def _openai_compatible(messages, model, api_key, base_url):
         if api_key:
             headers["Authorization"] = "Bearer " + api_key
         data = _post(base_url.rstrip("/") + "/chat/completions", payload, headers)
+        _record_usage(data)
         choices = data.get("choices") or []
         message = (choices[0].get("message") if choices else {}) or {}
         tool_calls = message.get("tool_calls") or []
@@ -401,6 +430,7 @@ def _anthropic(messages, model, api_key, base_url):
             "Content-Type": "application/json",
         },
     )
+    _record_usage(data)
     for block in data.get("content", []) or []:
         if (
             isinstance(block, dict)
@@ -458,6 +488,7 @@ def _gemini(messages, model, api_key, base_url):
         payload,
         {"x-goog-api-key": api_key, "Content-Type": "application/json"},
     )
+    _record_usage(data)
     candidates = data.get("candidates") or []
     if not candidates:
         raise AIError("Gemini 返回成功，但没有候选输出")
@@ -491,6 +522,9 @@ def chat(provider_name: str, messages: list[dict], model: str, api_key: str, bas
         raise AIError("尚未设置模型")
     if not api_key:
         raise AIError("尚未设置 API Key")
+    LAST_USAGE.clear()
+    LAST_USAGE["model"] = model
+    LAST_USAGE["provider"] = provider_name
     base = (base_url or info["base_url"]).strip()
     provider_id = info["id"]
     if provider_id == "openai":

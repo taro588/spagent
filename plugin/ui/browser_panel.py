@@ -584,8 +584,11 @@ class HostView(QtWidgets.QWidget):
 
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(500)
+        self._timer.start(250)
         self._launch_or_attach()
+        # Sync immediately whenever the placeholder itself is resized, moved
+        # to a new native window or re-laid-out (sidebar collapse/expand).
+        self.placeholder.installEventFilter(self)
 
     # ---------- process lifecycle ----------
 
@@ -612,20 +615,7 @@ class HostView(QtWidgets.QWidget):
 
     def _tick(self):
         if not self._embedded:
-            if not self._hwnd:
-                state = self._read_state()
-                hwnd = int(state.get("hwnd") or 0)
-                if host_embed.is_window(hwnd):
-                    self._hwnd = hwnd
-            if self._hwnd:
-                parent_hwnd = int(self.placeholder.winId())
-                if host_embed.embed(self._hwnd, parent_hwnd):
-                    self._embedded = True
-                    self.status.setVisible(False)
-                    self.placeholder.setVisible(True)
-                    host_embed.sync_geometry(self._hwnd, parent_hwnd)
-                    host_embed.set_visible(self._hwnd, self.isVisible())
-                    self.host_ready.emit(True)
+            self._try_embed()
             return
         # embedded: watch for host crash and relaunch
         if not host_embed.is_window(self._hwnd):
@@ -640,8 +630,79 @@ class HostView(QtWidgets.QWidget):
             else:
                 self.status.setText("✗ 内置浏览器反复退出，请重启插件")
                 self.status.setVisible(True)
+            return
+        # embedded: Qt can recreate the placeholder's native window (e.g.
+        # after hide/show cycles from sidebar collapse) — then the child
+        # window ends up parented to a dead HWND and floats as a black box.
+        # Detect that and re-embed into the current placeholder.
+        if not self._parent_is_placeholder():
+            self._embedded = False
+            self._try_embed()
+            return
+        # embedded: enforce geometry every tick (cheap no-op when aligned)
+        self._sync_geometry_safe()
+
+    def _parent_is_placeholder(self) -> bool:
+        try:
+            return host_embed.parent_hwnd_of(self._hwnd) == int(self.placeholder.winId())
+        except Exception:
+            return False
+
+    def _try_embed(self):
+        if self._embedded:
+            return
+        if not self._hwnd:
+            state = self._read_state()
+            hwnd = int(state.get("hwnd") or 0)
+            if host_embed.is_window(hwnd):
+                self._hwnd = hwnd
+            if not self._hwnd:
+                return
+        parent_hwnd = int(self.placeholder.winId())
+        if host_embed.embed(self._hwnd, parent_hwnd):
+            self._embedded = True
+            self.status.setVisible(False)
+            self.placeholder.setVisible(True)
+            host_embed.sync_geometry(self._hwnd, parent_hwnd)
+            host_embed.set_visible(self._hwnd, self.isVisible())
+            # Re-sync shortly after: the panel may still be laying out,
+            # and a late resize is what leaves black gaps around the view.
+            for delay in (100, 300, 800):
+                QtCore.QTimer.singleShot(
+                    delay, lambda: self._sync_geometry_safe())
+            self.host_ready.emit(True)
+
+    def _sync_geometry_safe(self):
+        if self._embedded and self._hwnd and host_embed.is_window(self._hwnd):
+            try:
+                host_embed.sync_geometry(self._hwnd, int(self.placeholder.winId()))
+            except Exception:
+                pass
 
     # ---------- geometry / visibility ----------
+
+    def eventFilter(self, obj, event):
+        # Instant geometry sync while the placeholder is resized / re-shown /
+        # re-laid-out (sidebar collapse and expand), instead of waiting for
+        # the next 250 ms tick — that window is where the black box appeared.
+        if obj is self.placeholder:
+            etype = event.type()
+            if etype in (QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.Show,
+                         QtCore.QEvent.Type.Hide, QtCore.QEvent.Type.Move,
+                         QtCore.QEvent.Type.LayoutRequest):
+                self._sync_geometry_safe()
+        return super().eventFilter(obj, event)
+
+    def resync(self):
+        """Force an immediate geometry/visibility re-sync (public hook used
+        after the browser pane is expanded from its collapsed state)."""
+        if not (self._embedded and self._hwnd and host_embed.is_window(self._hwnd)):
+            return
+        try:
+            host_embed.set_visible(self._hwnd, self.isVisible())
+            host_embed.sync_geometry(self._hwnd, int(self.placeholder.winId()))
+        except Exception:
+            pass
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -756,7 +817,7 @@ class BrowserPanel(QtWidgets.QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
-        # --- tab strip: [tab][tab][+] ... [collapse] ---
+        # --- tab strip: [tab][tab][+] (collapse handled by the header toggle) ---
         strip = QtWidgets.QHBoxLayout()
         strip.setSpacing(4)
         self.tab_bar = _TabBar()
@@ -769,12 +830,10 @@ class BrowserPanel(QtWidgets.QWidget):
         plus.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         plus.clicked.connect(self.new_tab)
         strip.addWidget(plus)
-        collapse = QtWidgets.QToolButton()
-        collapse.setText("⟩⟩")
-        collapse.setToolTip("收起浏览器侧栏")
-        collapse.clicked.connect(self.collapse_requested.emit)
-        strip.addWidget(collapse)
-        root.addLayout(strip)
+        self._strip_widget = QtWidgets.QWidget()
+        self._strip_widget.setLayout(strip)
+        self._strip_widget.setObjectName("SPAI_Browser_Strip")
+        root.addWidget(self._strip_widget)
 
         # --- navigation row: ← → ↻  [address]  ⧉ ---
         nav = QtWidgets.QHBoxLayout()
@@ -809,10 +868,15 @@ class BrowserPanel(QtWidgets.QWidget):
             self._mode = "host"
             self.view = None
             self.reader = None
+            # In host mode the embedded browser draws its own chrome and must
+            # sit flush against the chat pane — any outer margin shows up as
+            # the dark "black box" frame users reported.
+            root.setContentsMargins(0, 0, 0, 0)
             self.host = HostView(host_exe, _browser_host_state_file())
             root.addWidget(self.host, 1)
-            self.tab_bar.setVisible(False)
-            plus.setVisible(False)
+            # The browser_host process draws its own GPT-style chrome;
+            # the whole Qt tab strip stays hidden in this mode.
+            self._strip_widget.setVisible(False)
             self._nav_widget.setVisible(False)
             self._last_host_url = ""
             self._url_timer = QtCore.QTimer(self)
@@ -826,8 +890,7 @@ class BrowserPanel(QtWidgets.QWidget):
             self.view.setUrl(QtCore.QUrl(start_url))
             self._mode = "web"
             self.reader = None
-            self.tab_bar.setVisible(False)
-            plus.setVisible(False)
+            self._strip_widget.setVisible(False)
         else:
             self.view = None
             self._mode = "reader"
@@ -957,6 +1020,11 @@ class BrowserPanel(QtWidgets.QWidget):
                 self.host.shutdown()
             except Exception:
                 pass
+
+    def resync_host(self):
+        """Re-sync the embedded browser geometry (public passthrough)."""
+        if self._mode == "host" and getattr(self, "host", None) is not None:
+            self.host.resync()
 
     def _navigate(self):
         text = self.address.text().strip()

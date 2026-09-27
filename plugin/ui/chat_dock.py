@@ -4,9 +4,10 @@ import base64
 import html
 import json
 import mimetypes
+import time
 
 from core.actions import execute_plan, validate_plan
-from core.ai_client import AI_CLIENT_BUILD, PROVIDERS, chat, web_search
+from core.ai_client import AI_CLIENT_BUILD, PROVIDERS, LAST_USAGE, chat, web_search
 from core.painter_context import prompt_context
 from core.qt_compat import qt_modules
 from core.settings import provider_config, save_provider_config
@@ -37,7 +38,7 @@ HIGH_IMPACT_ACTIONS = {
 
 
 class _Worker(QtCore.QObject):
-    finished = QtCore.Signal(str, str)
+    finished = QtCore.Signal(str, str, dict)
 
     def __init__(self, provider, model, key, base_url, messages):
         super().__init__()
@@ -45,15 +46,24 @@ class _Worker(QtCore.QObject):
 
     @QtCore.Slot()
     def run(self):
+        started = time.monotonic()
         try:
             provider, model, key, base_url, messages = self.args
-            self.finished.emit("ok", chat(provider, messages, model, key, base_url))
+            text = chat(provider, messages, model, key, base_url)
+            meta = dict(LAST_USAGE)
+            meta["elapsed"] = round(time.monotonic() - started, 1)
+            meta.setdefault("model", model)
+            self.finished.emit("ok", text, meta)
         except Exception as exc:
-            self.finished.emit("error", str(exc))
+            self.finished.emit("error", str(exc), {
+                "elapsed": round(time.monotonic() - started, 1),
+                "model": self.args[1],
+                "provider": self.args[0],
+            })
 
 
 class ChatDock(QtWidgets.QWidget):
-    def __init__(self, version_text="0.6.0"):
+    def __init__(self, version_text="0.6.2"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
@@ -65,6 +75,9 @@ class ChatDock(QtWidgets.QWidget):
         self._last_plan = None
         self._last_execution = None
         self._attachments = []
+        self._rendered = []
+        self._last_meta = {}
+        self._busy_started = None
         self._build_ui(version_text)
         self._load_provider()
 
@@ -76,59 +89,107 @@ class ChatDock(QtWidgets.QWidget):
                 background: #181a1f; color: #f5f6f7;
                 border: 1px solid #30343b; border-radius: 10px; padding: 8px;
             }
+            QLineEdit:focus, QComboBox:focus { border-color: #10a37f; }
             QPushButton {
                 background: #202329; color: #f5f6f7;
                 border: 1px solid #343941; border-radius: 9px; padding: 7px 12px;
             }
             QPushButton:hover { background: #292d34; }
+            QPushButton#SPAI_PrimaryButton {
+                background: #10a37f; color: #ffffff; border: none;
+                border-radius: 9px; padding: 8px 20px; font-weight: 600;
+            }
+            QPushButton#SPAI_PrimaryButton:hover { background: #0e8f6f; }
+            QToolButton {
+                background: transparent; color: #c8cdd6;
+                border: 1px solid #343941; border-radius: 9px; padding: 6px 10px;
+            }
+            QToolButton:hover { background: #292d34; color: #ffffff; }
+            QToolButton:checked { background: #292d34; }
             QComboBox { min-height: 28px; }
+            QFrame#SPAI_Composer {
+                background: #1d2026; border: 1px solid #30343b; border-radius: 16px;
+            }
+            QFrame#SPAI_Composer[spaiFocus="true"] { border-color: #10a37f; }
+            QPlainTextEdit#SPAI_ChatInput {
+                background: transparent; color: #f5f6f7; border: none; padding: 2px 4px;
+                selection-background-color: #2f4f46;
+            }
+            QPushButton#SPAI_AttachButton, QComboBox#SPAI_ModeButton {
+                background: transparent; border: none; color: #aeb5c2; padding: 4px 8px;
+            }
+            QPushButton#SPAI_AttachButton:hover, QComboBox#SPAI_ModeButton:hover {
+                background: #2a2e35; color: #ffffff;
+            }
+            QComboBox#SPAI_ModeButton::drop-down { border: none; width: 18px; }
+            QComboBox#SPAI_ModeButton QAbstractItemView {
+                background: #22252b; color: #e8eaee; border: 1px solid #343941;
+                selection-background-color: #2f4f46;
+            }
+            QPushButton#SPAI_SendButton {
+                background: #ffffff; color: #0d0f12; border: none; border-radius: 16px;
+                font-size: 12px; font-weight: 700; padding: 0px; letter-spacing: 0.5px;
+            }
+            QPushButton#SPAI_SendButton:hover:!disabled { background: #e8eaee; }
+            QPushButton#SPAI_SendButton:disabled { background: #43484f; color: #9aa0aa; }
+            QScrollArea { background: transparent; border: none; }
+            QWidget#SPAI_SettingsContent { background: transparent; }
+            QFrame#SPAI_Card {
+                background: #1a1d22; border: 1px solid #262a31; border-radius: 12px;
+            }
+            QLabel#SPAI_CardTitle { color: #8f96a3; font-size: 12px; font-weight: 600; }
+            QLabel#SPAI_FieldLabel { color: #aeb5c2; font-size: 12px; }
+            QLabel#SPAI_FieldHint { color: #6d7480; font-size: 11px; }
+            QCheckBox { color: #d9dce1; spacing: 8px; }
+            QCheckBox::indicator {
+                width: 16px; height: 16px; border: 1px solid #3a4150;
+                border-radius: 4px; background: #181a1f;
+            }
+            QCheckBox::indicator:hover { border-color: #10a37f; }
+            QCheckBox::indicator:checked { background: #10a37f; border-color: #10a37f; }
         """)
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
+        # GPT-desktop-style header: brand block left (title + subtitle), controls right.
         header = QtWidgets.QHBoxLayout()
+        self.header_layout = header
+        header.setSpacing(8)
+        brand = QtWidgets.QVBoxLayout()
+        brand.setSpacing(1)
         title = QtWidgets.QLabel("<b>SP AI Assistant</b>")
-        title.setStyleSheet("font-size: 16px;")
-        header.addWidget(title)
+        title.setStyleSheet("font-size: 16px; letter-spacing: 0.2px;")
+        brand.addWidget(title)
+        self.chat_hint = QtWidgets.QLabel("Substance 3D Painter · AI 材质助手")
+        self.chat_hint.setStyleSheet("color:#8f96a3; font-size:12px;")
+        brand.addWidget(self.chat_hint)
+        header.addLayout(brand)
         header.addStretch()
         self.model_badge = QtWidgets.QComboBox()
         self.model_badge.setMinimumWidth(180)
-        header.addWidget(self.model_badge)
+        self.model_badge.setFixedHeight(32)
+        header.addWidget(self.model_badge, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.settings_toggle = QtWidgets.QPushButton("⚙")
-        self.settings_toggle.setFixedWidth(36)
-        header.addWidget(self.settings_toggle)
+        self.settings_toggle.setFixedSize(36, 32)
+        header.addWidget(self.settings_toggle, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(header)
 
-        self.chat_hint = QtWidgets.QLabel("Substance 3D Painter · AI 材质助手")
-        self.chat_hint.setStyleSheet("color:#8f96a3; padding-bottom:4px;")
-        root.addWidget(self.chat_hint)
-
-        settings = QtWidgets.QGridLayout()
-        settings.addWidget(QtWidgets.QLabel("模型提供商"), 0, 0)
+        # --- settings panel (⚙): card-based, scrollable, GPT-style ---
         self.provider = QtWidgets.QComboBox()
         self.provider.addItems(list(PROVIDERS.keys()))
-        settings.addWidget(self.provider, 0, 1)
 
-        settings.addWidget(QtWidgets.QLabel("模型"), 1, 0)
         self.model = QtWidgets.QComboBox()
         self.model.setEditable(True)
-        settings.addWidget(self.model, 1, 1)
 
-        settings.addWidget(QtWidgets.QLabel("API Key"), 2, 0)
         self.key = QtWidgets.QLineEdit()
         self.key.setEchoMode(QtWidgets.QLineEdit.Password)
-        settings.addWidget(self.key, 2, 1)
+        self.key.setPlaceholderText("sk-…（仅存本机，DPAPI 加密）")
 
-        settings.addWidget(QtWidgets.QLabel("Base URL"), 3, 0)
         self.base_url = QtWidgets.QLineEdit()
-        settings.addWidget(self.base_url, 3, 1)
 
-        workflow_group = QtWidgets.QGroupBox("材质工作流选项")
-        workflow_layout = QtWidgets.QGridLayout(workflow_group)
         self.web_search_enabled = QtWidgets.QCheckBox("联网搜索（官方工具）")
         self.web_search_enabled.setToolTip("开启后先搜索公开网页，再把结果交给当前模型；不会替代原模型。")
-        workflow_layout.addWidget(self.web_search_enabled, 3, 0, 1, 2)
         self.workflow_bake = QtWidgets.QCheckBox("烘焙 Mesh Maps")
         self.workflow_mask = QtWidgets.QCheckBox("添加 Smart Mask")
         self.workflow_generator = QtWidgets.QCheckBox("添加 Generator")
@@ -138,14 +199,7 @@ class ChatDock(QtWidgets.QWidget):
         self.workflow_resolution.addItem("1024", "1024")
         self.workflow_resolution.addItem("2048", "2048")
         self.workflow_resolution.addItem("4096", "4096")
-        workflow_layout.addWidget(self.workflow_bake, 0, 0)
-        workflow_layout.addWidget(self.workflow_mask, 0, 1)
-        workflow_layout.addWidget(self.workflow_generator, 1, 0)
-        workflow_layout.addWidget(self.workflow_export, 1, 1)
-        workflow_layout.addWidget(QtWidgets.QLabel("分辨率"), 2, 0)
-        workflow_layout.addWidget(self.workflow_resolution, 2, 1)
-        settings.addWidget(workflow_group, 4, 0, 1, 2)
-        settings.addWidget(QtWidgets.QLabel("执行模式"), 5, 0)
+
         self.execution_mode = QtWidgets.QComboBox()
         self.execution_mode.addItem("仅生成计划", "plan")
         self.execution_mode.addItem("每次确认", "confirm")
@@ -156,86 +210,205 @@ class ChatDock(QtWidgets.QWidget):
             "每次确认：每个计划执行前都确认。\n"
             "低风险自动执行：仅自动执行低风险动作；高影响动作仍需确认。"
         )
-        settings.addWidget(self.execution_mode, 5, 1)
 
-        settings.addWidget(QtWidgets.QLabel("SP 操作权限"), 6, 0)
         self.permission_mode = QtWidgets.QComboBox()
         self.permission_mode.addItem("仅查看", "readonly")
         self.permission_mode.addItem("操作前询问", "confirm")
         self.permission_mode.addItem("自动执行", "auto")
         self.permission_mode.setCurrentIndex(2)
         self.permission_mode.setToolTip("控制 AI 是否可以直接调用 Painter 官方 Python API")
-        settings.addWidget(self.permission_mode, 6, 1)
 
         self.allow_high_impact = QtWidgets.QCheckBox("允许自动执行删除/导出等高影响操作")
         self.allow_high_impact.setChecked(False)
-        settings.addWidget(self.allow_high_impact, 7, 1)
+        self.allow_high_impact.setStyleSheet("color:#e8b46a;")
 
         self.settings_panel = QtWidgets.QWidget()
-        self.settings_panel.setLayout(settings)
+        settings_root = QtWidgets.QVBoxLayout(self.settings_panel)
+        settings_root.setContentsMargins(0, 0, 0, 0)
+        settings_root.setSpacing(8)
         self.settings_panel.setVisible(False)
-        root.addWidget(self.settings_panel)
-        self.settings_toggle.clicked.connect(
-            lambda: self.settings_panel.setVisible(not self.settings_panel.isVisible())
-        )
 
-        buttons = QtWidgets.QHBoxLayout()
-        for label, slot in (
-            ("保存设置", self._save),
-            ("测试连接", self._test_connection),
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        content = QtWidgets.QWidget()
+        content.setObjectName("SPAI_SettingsContent")
+        cards = QtWidgets.QVBoxLayout(content)
+        cards.setContentsMargins(0, 2, 4, 2)
+        cards.setSpacing(10)
+
+        def card(title):
+            frame = QtWidgets.QFrame()
+            frame.setObjectName("SPAI_Card")
+            inner = QtWidgets.QVBoxLayout(frame)
+            inner.setContentsMargins(14, 12, 14, 14)
+            inner.setSpacing(10)
+            label = QtWidgets.QLabel(title)
+            label.setObjectName("SPAI_CardTitle")
+            inner.addWidget(label)
+            cards.addWidget(frame)
+            return inner
+
+        def field(label_text, widget, hint=None):
+            box = QtWidgets.QVBoxLayout()
+            box.setSpacing(4)
+            label = QtWidgets.QLabel(label_text)
+            label.setObjectName("SPAI_FieldLabel")
+            box.addWidget(label)
+            box.addWidget(widget)
+            if hint:
+                hint_label = QtWidgets.QLabel(hint)
+                hint_label.setObjectName("SPAI_FieldHint")
+                box.addWidget(hint_label)
+            return box
+
+        # -- 卡片 1：模型连接 --
+        connect_card = card("模型连接")
+        provider_model_row = QtWidgets.QHBoxLayout()
+        provider_model_row.setSpacing(10)
+        provider_model_row.addLayout(field("模型提供商", self.provider), 1)
+        provider_model_row.addLayout(field("模型", self.model), 1)
+        connect_card.addLayout(provider_model_row)
+
+        key_row = QtWidgets.QHBoxLayout()
+        key_row.setSpacing(6)
+        key_row.addLayout(field("API Key", self.key), 1)
+        self.key_toggle = QtWidgets.QToolButton()
+        self.key_toggle.setText("显示")
+        self.key_toggle.setCheckable(True)
+        self.key_toggle.setToolTip("显示/隐藏 API Key")
+        self.key_toggle.toggled.connect(self._toggle_key_visibility)
+        key_row.addWidget(self.key_toggle)
+        connect_card.addLayout(key_row)
+
+        connect_card.addLayout(field(
+            "Base URL", self.base_url, "兼容 OpenAI 接口的中转站可在此填写自定义地址"))
+
+        test_row = QtWidgets.QHBoxLayout()
+        test_button = QtWidgets.QPushButton("测试连接")
+        test_button.clicked.connect(self._test_connection)
+        test_row.addWidget(test_button)
+        test_row.addStretch(1)
+        connect_card.addLayout(test_row)
+
+        # -- 卡片 2：材质工作流 --
+        workflow_card = card("材质工作流")
+        workflow_grid = QtWidgets.QGridLayout()
+        workflow_grid.setHorizontalSpacing(18)
+        workflow_grid.setVerticalSpacing(8)
+        workflow_grid.addWidget(self.workflow_bake, 0, 0)
+        workflow_grid.addWidget(self.workflow_mask, 0, 1)
+        workflow_grid.addWidget(self.workflow_generator, 1, 0)
+        workflow_grid.addWidget(self.workflow_export, 1, 1)
+        workflow_grid.addWidget(self.web_search_enabled, 2, 0, 1, 2)
+        workflow_card.addLayout(workflow_grid)
+        workflow_card.addLayout(field("输出分辨率", self.workflow_resolution))
+
+        # -- 卡片 3：自动化与权限 --
+        permission_card = card("自动化与权限")
+        permission_card.addLayout(field(
+            "执行模式", self.execution_mode,
+            "高影响操作（删除/导出）在任何模式下都会先征求确认"))
+        permission_card.addLayout(field("SP 操作权限", self.permission_mode))
+        permission_card.addWidget(self.allow_high_impact)
+
+        # -- 卡片 4：诊断与维护 --
+        diag_card = card("诊断与维护")
+        diag_grid = QtWidgets.QGridLayout()
+        diag_grid.setHorizontalSpacing(8)
+        diag_grid.setVerticalSpacing(8)
+        for index, (label, slot) in enumerate((
             ("读取 Painter 上下文", self._context),
             ("运行插件自检", self._self_check),
             ("官方API直连测试", self._official_api_test),
             ("清空对话", self._clear),
-        ):
+        )):
             button = QtWidgets.QPushButton(label)
             button.clicked.connect(slot)
-            buttons.addWidget(button)
-        root.addLayout(buttons)
+            diag_grid.addWidget(button, index // 2, index % 2)
+        diag_card.addLayout(diag_grid)
+
+        cards.addStretch(1)
+        scroll.setWidget(content)
+        settings_root.addWidget(scroll, 1)
+
+        save_row = QtWidgets.QHBoxLayout()
+        save_button = QtWidgets.QPushButton("保存设置")
+        save_button.setObjectName("SPAI_PrimaryButton")
+        save_button.clicked.connect(self._save)
+        save_row.addWidget(save_button)
+        save_row.addStretch(1)
+        settings_root.addLayout(save_row)
+
+        root.addWidget(self.settings_panel, 1)
+        self.settings_toggle.clicked.connect(self._toggle_settings)
 
         self.status = QtWidgets.QLabel("未配置 AI")
         root.addWidget(self.status)
 
         self.history = QtWidgets.QTextBrowser()
         self.history.setOpenExternalLinks(False)
+        self.history.setOpenLinks(False)
+        self.history.anchorClicked.connect(self._on_anchor)
         self.history.setStyleSheet(
             "QTextBrowser { background:#111214; border:none; padding:8px; font-size:13px; }"
         )
         root.addWidget(self.history, 1)
 
-        bottom = QtWidgets.QHBoxLayout()
-        bottom.setSpacing(6)
-        self.attach = QtWidgets.QPushButton("+")
-        self.attach.setFixedWidth(34)
-        self.attach.setToolTip("添加参考图、材质图或其他图片，让 AI 分析后参与制作")
-        self.attach.clicked.connect(self._show_attach_menu)
-        bottom.addWidget(self.attach)
-
-        self.input = QtWidgets.QPlainTextEdit()
-        self.input.setObjectName("SPAI_ChatInput")
-        self.input.setPlaceholderText("输入 @ 即可添加 Painter 上下文，例如：做一个旧水泥材质")
-        self.input.setFixedHeight(46)
-        self.input.installEventFilter(self)
-        bottom.addWidget(self.input, 1)
-
-        self.bottom_mode = QtWidgets.QComboBox()
-        self.bottom_mode.addItem("自动执行", "auto")
-        self.bottom_mode.addItem("确认执行", "confirm")
-        self.bottom_mode.addItem("仅计划", "plan")
-        self.bottom_mode.setCurrentIndex(0)
-        self.bottom_mode.setToolTip("与执行模式同步")
-        bottom.addWidget(self.bottom_mode)
+        self._busy_timer = QtCore.QTimer(self)
+        self._busy_timer.setInterval(1000)
+        self._busy_timer.timeout.connect(self._tick_busy)
 
         self.attachment_preview = QtWidgets.QHBoxLayout()
         self.attachment_preview.setSpacing(6)
         root.addLayout(self.attachment_preview)
 
-        self.send = QtWidgets.QPushButton("↑")
-        self.send.setFixedSize(38, 34)
-        self.send.setToolTip("发送")
+        # GPT-style composer: one rounded card containing a borderless input
+        # with the toolbar (attach / mode / send) on a row below it.
+        self.composer = QtWidgets.QFrame()
+        self.composer.setObjectName("SPAI_Composer")
+        composer_lay = QtWidgets.QGridLayout(self.composer)
+        composer_lay.setContentsMargins(12, 9, 9, 8)
+        composer_lay.setHorizontalSpacing(6)
+        composer_lay.setVerticalSpacing(4)
+
+        self.input = QtWidgets.QPlainTextEdit()
+        self.input.setObjectName("SPAI_ChatInput")
+        self.input.setPlaceholderText("询问任何材质问题，输入 @ 添加 Painter 上下文…")
+        self.input.setFixedHeight(46)
+        self.input.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.input.installEventFilter(self)
+        self.input.textChanged.connect(self._autosize_input)
+        composer_lay.addWidget(self.input, 0, 0, 1, 4)
+
+        self.attach = QtWidgets.QPushButton("+")
+        self.attach.setObjectName("SPAI_AttachButton")
+        self.attach.setFixedSize(30, 30)
+        self.attach.setToolTip("添加参考图、材质图或其他图片，让 AI 分析后参与制作")
+        self.attach.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.attach.clicked.connect(self._show_attach_menu)
+        composer_lay.addWidget(self.attach, 1, 0)
+
+        composer_lay.addItem(QtWidgets.QSpacerItem(
+            8, 8, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum), 1, 1)
+
+        self.bottom_mode = QtWidgets.QComboBox()
+        self.bottom_mode.setObjectName("SPAI_ModeButton")
+        self.bottom_mode.addItem("自动执行", "auto")
+        self.bottom_mode.addItem("确认执行", "confirm")
+        self.bottom_mode.addItem("仅计划", "plan")
+        self.bottom_mode.setCurrentIndex(0)
+        self.bottom_mode.setToolTip("与执行模式同步")
+        composer_lay.addWidget(self.bottom_mode, 1, 2)
+
+        self.send = QtWidgets.QPushButton("Enter")
+        self.send.setObjectName("SPAI_SendButton")
+        self.send.setFixedSize(76, 32)
+        self.send.setToolTip("发送（Enter 发送 / Shift+Enter 换行）")
+        self.send.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.send.clicked.connect(self._send)
-        bottom.addWidget(self.send)
-        root.addLayout(bottom)
+        composer_lay.addWidget(self.send, 1, 3)
+        root.addWidget(self.composer)
 
         self.execution_mode.currentIndexChanged.connect(self._sync_bottom_mode)
         self.permission_mode.currentIndexChanged.connect(self._sync_permission_mode)
@@ -243,6 +416,17 @@ class ChatDock(QtWidgets.QWidget):
 
         self.provider.currentTextChanged.connect(self._load_provider)
         self.model_badge.currentTextChanged.connect(self._sync_model_badge)
+
+    def _toggle_settings(self):
+        """GPT-style: the settings page replaces the conversation while open."""
+        visible = not self.settings_panel.isVisible()
+        self.settings_panel.setVisible(visible)
+        self.history.setVisible(not visible)
+
+    def _toggle_key_visibility(self, checked):
+        self.key.setEchoMode(
+            QtWidgets.QLineEdit.Normal if checked else QtWidgets.QLineEdit.Password)
+        self.key_toggle.setText("隐藏" if checked else "显示")
 
     def _load_provider(self):
         provider = self.provider.currentText()
@@ -471,8 +655,9 @@ class ChatDock(QtWidgets.QWidget):
         self._append("系统", "正在根据验证结果请求 AI 生成修正计划……")
         QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, self._correction_done))
 
-    @QtCore.Slot(str, str)
-    def _correction_done(self, state, text):
+    @QtCore.Slot(str, str, dict)
+    def _correction_done(self, state, text, meta=None):
+        self._last_meta = dict(meta or {})
         if state != "ok":
             self._append("修正请求失败", text)
             self.status.setText("✗ 自动生成修正计划失败")
@@ -510,8 +695,9 @@ class ChatDock(QtWidgets.QWidget):
         self._append("系统", "正在转换为可执行 Painter 操作计划……")
         QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, self._plan_repair_done))
 
-    @QtCore.Slot(str, str)
-    def _plan_repair_done(self, state, text):
+    @QtCore.Slot(str, str, dict)
+    def _plan_repair_done(self, state, text, meta=None):
+        self._last_meta = dict(meta or {})
         if state != "ok":
             self._append("计划转换失败", text)
             self.status.setText("✗ 无法生成执行计划")
@@ -548,6 +734,7 @@ class ChatDock(QtWidgets.QWidget):
         self._attachments.clear()
         self._last_plan = None
         self._last_execution = None
+        self._rendered.clear()
         self.history.clear()
         self.status.setText("对话已清空")
 
@@ -562,37 +749,153 @@ class ChatDock(QtWidgets.QWidget):
             urls.append(match.group(1))
         return list(dict.fromkeys(urls))
 
-    def _append(self, role, message, images=None):
+    def _append(self, role, message, images=None, meta=None):
+        text = str(message or "")
+        if isinstance(message, (dict, list)):
+            text = json.dumps(message, ensure_ascii=False, indent=2)
         images = list(images or [])
-        images.extend(self._extract_image_urls(message))
-        safe_message = html.escape(str(message or "")).replace("\n", "<br>")
+        images.extend(self._extract_image_urls(text))
         is_user = str(role).startswith("你")
-        label = "你" if is_user else str(role)
-        align = "right" if is_user else "left"
-        bubble_bg = "#24272d" if is_user else "#181a1f"
-        border = "#343941" if is_user else "#262a31"
-        label_color = "#9ec5ff" if is_user else "#aeb5c2"
-        image_html = ""
-        for url in list(dict.fromkeys(images)):
+        is_ai = str(role) == "AI"
+        self._rendered.append({
+            "role": "user" if is_user else ("ai" if is_ai else "system"),
+            "label": str(role),
+            "text": text,
+            "images": list(dict.fromkeys(images)),
+            "meta": dict(meta) if meta else dict(self._last_meta),
+            "expanded": False,
+        })
+        if is_ai:
+            self._last_meta = {}
+        self._rerender_history()
+
+    def _on_anchor(self, url):
+        link = url.fragment() or url.toString()
+        if link.startswith("#"):
+            link = link[1:]
+        if link.startswith("stats-"):
+            try:
+                index = int(link.rsplit("-", 1)[1])
+            except ValueError:
+                return
+            if 0 <= index < len(self._rendered):
+                item = self._rendered[index]
+                item["expanded"] = not item["expanded"]
+                self._rerender_history()
+
+    @staticmethod
+    def _images_html(images):
+        blocks = ""
+        for url in images:
             safe_url = html.escape(str(url), quote=True)
-            image_html += (
+            blocks += (
                 '<div style="margin-top:8px;">'
                 f'<img src="{safe_url}" width="420" style="border-radius:10px; border:1px solid #30343b;">'
                 '</div>'
             )
-        block = (
-            f'<div align="{align}" style="margin:10px 2px 14px 2px;">'
-            f'<div style="color:{label_color}; font-weight:600; margin-bottom:4px;">{html.escape(label)}</div>'
-            f'<table cellpadding="0" cellspacing="0"><tr><td style="background:{bubble_bg}; border:1px solid {border}; '
-            f'border-radius:12px; padding:10px 12px; color:#f2f3f5; line-height:1.45; max-width:520px;">'
-            f'{safe_message}{image_html}</td></tr></table></div>'
+        return blocks
+
+    def _user_block(self, item):
+        safe = html.escape(item["text"]).replace("\n", "<br>")
+        return (
+            '<div align="right" style="margin:10px 2px 6px 2px;">'
+            '<table cellpadding="0" cellspacing="0"><tr>'
+            '<td style="background:#24272d; border:1px solid #343941; border-radius:14px; '
+            'padding:10px 14px; color:#f2f3f5; line-height:1.5; max-width:520px;">'
+            f'{safe}{self._images_html(item["images"])}</td></tr></table></div>'
         )
-        self.history.append(block)
+
+    def _ai_block(self, index, item):
+        meta = item.get("meta") or {}
+        model = str(meta.get("model") or self.model.currentText() or "AI")
+        elapsed = meta.get("elapsed")
+        provider = str(meta.get("provider") or "")
+        header = f'<b style="color:#f2f3f5; font-size:13px;">{html.escape(model)}</b>'
+        if elapsed is not None:
+            header += f' <span style="color:#8f96a3;">已处理 {elapsed}s</span>'
+        stats_link = ""
+        details = ""
+        if meta:
+            arrow = "▾" if item["expanded"] else "▸"
+            stats_link = (
+                f' <a href="#stats-{index}" style="color:#8ab4f8; text-decoration:none;">{arrow} 处理详情</a>'
+            )
+        if item["expanded"] and meta:
+            prompt_tokens = self._format_number(meta.get("prompt_tokens"))
+            completion_tokens = self._format_number(meta.get("completion_tokens"))
+            total_tokens = self._format_number(meta.get("total_tokens"))
+            rows = [f'回复耗时：{elapsed}s' if elapsed is not None else None]
+            if provider:
+                rows.append(f'提供商：{provider}')
+            if prompt_tokens:
+                rows.append(f'输入 tokens：{prompt_tokens}')
+            if completion_tokens:
+                rows.append(f'输出 tokens：{completion_tokens}')
+            if total_tokens:
+                rows.append(f'合计 tokens：{total_tokens}')
+            if not prompt_tokens and not completion_tokens:
+                rows.append('本次服务未返回 token 统计')
+            details = (
+                '<table width="100%" cellpadding="0" cellspacing="0"><tr>'
+                '<td style="background:#17191d; border:1px solid #262a31; border-radius:10px; '
+                'padding:8px 12px; color:#aeb5c2; line-height:1.6;">'
+                + "<br>".join(row for row in rows if row)
+                + '</td></tr></table>'
+            )
+        safe = html.escape(item["text"]).replace("\n", "<br>")
+        return (
+            '<div align="left" style="margin:12px 2px 14px 2px;">'
+            f'<div style="margin-bottom:4px;">{header}{stats_link}</div>'
+            f'<div style="color:#f2f3f5; line-height:1.5; max-width:560px;">{safe}</div>'
+            f'{self._images_html(item["images"])}'
+            + (f'<div style="margin-top:6px;">{details}</div>' if details else '')
+            + '</div>'
+        )
+
+    @staticmethod
+    def _system_block(item):
+        label = html.escape(item["label"])
+        text = html.escape(item["text"]).replace("\n", "<br>")
+        return (
+            f'<div style="color:#8f96a3; font-size:12px; margin:8px 2px;">'
+            f'<span style="color:#6f7683;">{label}</span> {text}</div>'
+        )
+
+    @staticmethod
+    def _format_number(value):
+        try:
+            return f'{int(value):,}'
+        except (TypeError, ValueError):
+            return ""
+
+    def _rerender_history(self):
+        self.history.clear()
+        blocks = []
+        for index, item in enumerate(self._rendered):
+            if item["role"] == "user":
+                blocks.append(self._user_block(item))
+            elif item["role"] == "ai":
+                blocks.append(self._ai_block(index, item))
+            else:
+                blocks.append(self._system_block(item))
+        if blocks:
+            self.history.setHtml("".join(blocks))
         self.history.verticalScrollBar().setValue(self.history.verticalScrollBar().maximum())
 
     def _set_busy(self, busy):
         self.send.setEnabled(not busy)
-        self.status.setText("正在请求模型……" if busy else self.status.text())
+        if busy:
+            self._busy_started = time.monotonic()
+            self.status.setText("生成回复中 · 已处理 0s")
+            self._busy_timer.start()
+        else:
+            self._busy_timer.stop()
+            self._busy_started = None
+
+    def _tick_busy(self):
+        if self._busy_started is not None:
+            elapsed = int(time.monotonic() - self._busy_started)
+            self.status.setText(f"生成回复中 · 已处理 {elapsed}s")
 
     def _start_request(self, messages, callback):
         if self._thread is not None:
@@ -630,8 +933,9 @@ class ChatDock(QtWidgets.QWidget):
         self.status.setText("正在测试连接……")
         self._start_request(messages, self._connection_result)
 
-    @QtCore.Slot(str, str)
-    def _connection_result(self, state, text):
+    @QtCore.Slot(str, str, dict)
+    def _connection_result(self, state, text, meta=None):
+        self._last_meta = dict(meta or {})
         self.status.setText("✓ API 连接成功" if state == "ok" else "✗ API 连接失败")
         self._append("连接测试" if state == "ok" else "连接错误", text)
 
@@ -731,20 +1035,37 @@ class ChatDock(QtWidgets.QWidget):
 
 
     def eventFilter(self, watched, event):
-        if watched is self.input and event.type() == QtCore.QEvent.Type.KeyPress:
-            if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
-                if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
-                    return False
-                self._send()
-                return True
-            if (
-                event.key() == QtCore.Qt.Key_V
-                and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
-                and self._clipboard_has_image()
-            ):
-                self._add_clipboard_image()
-                return True
+        if watched is self.input:
+            if event.type() == QtCore.QEvent.Type.FocusIn:
+                self._set_composer_focus(True)
+            elif event.type() == QtCore.QEvent.Type.FocusOut:
+                self._set_composer_focus(False)
+            elif event.type() == QtCore.QEvent.Type.KeyPress:
+                if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+                    if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
+                        return False
+                    self._send()
+                    return True
+                if (
+                    event.key() == QtCore.Qt.Key_V
+                    and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
+                    and self._clipboard_has_image()
+                ):
+                    self._add_clipboard_image()
+                    return True
         return super().eventFilter(watched, event)
+
+    def _set_composer_focus(self, focused: bool) -> None:
+        """Highlight the whole composer card while the chat input has focus."""
+        self.composer.setProperty("spaiFocus", bool(focused))
+        style = self.composer.style()
+        style.unpolish(self.composer)
+        style.polish(self.composer)
+
+    def _autosize_input(self) -> None:
+        """Grow the input with its content, capped like the GPT desktop app."""
+        lines = max(1, self.input.document().blockCount())
+        self.input.setFixedHeight(min(150, max(46, lines * 21 + 24)))
 
     def _send(self):
         self._execution_repair_attempts = 0
@@ -790,8 +1111,9 @@ class ChatDock(QtWidgets.QWidget):
         self._append("你", text)
         self._start_request(list(self._messages), self._done)
 
-    @QtCore.Slot(str, str)
-    def _done(self, state, text):
+    @QtCore.Slot(str, str, dict)
+    def _done(self, state, text, meta=None):
+        self._last_meta = dict(meta or {})
         if state != 'ok':
             if self._messages and self._messages[-1].get('role') == 'user':
                 self._messages.pop()
@@ -889,5 +1211,5 @@ class ChatDock(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, callback))
 
 
-def build_chat_dock(version_text="0.6.0"):
+def build_chat_dock(version_text="0.6.2"):
     return ChatDock(version_text)

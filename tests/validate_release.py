@@ -12,7 +12,7 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.6.0"
+    assert data["version"] == "0.6.2"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["max_tested_painter_version"] == "11.0.x"
@@ -32,13 +32,13 @@ def test_release_versions_are_synchronized():
     assert f'#define MyAppVersion "{version}"' in iss
     assert f"name: SP-AI-Assistant-Setup-{version}" in workflow
     assert f"SP_AI_Assistant_Setup_{{#MyAppVersion}}" in iss
-    assert "SP_AI_Assistant_Setup_0.6.0.sha256" in workflow
+    assert "SP_AI_Assistant_Setup_0.6.2.sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
 
 
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.6.0"' in iss
+    assert '#define MyAppVersion "0.6.2"' in iss
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
     assert 'Source: "..\\plugin\\core\\*"' in iss
@@ -261,7 +261,13 @@ def test_chat_bubbles_and_clipboard_input():
     assert "_add_clipboard_image" in text
     assert "_show_attach_menu" in text
     assert 'startswith("你")' in text
-    assert "background:{bubble_bg}" in text
+    # GPT-style layout: user bubble right, AI left with model name + collapsible stats
+    assert "_user_block" in text
+    assert "_ai_block" in text
+    assert 'align="right"' in text
+    assert "_rerender_history" in text
+    assert "处理详情" in text
+    assert "已处理" in text
 
 
 def test_official_api_diagnostic():
@@ -352,6 +358,22 @@ def test_browser_chatgpt_desktop_ui():
     assert "搜索或输入网址" in browser
 
 
+def test_settings_panel_card_redesign():
+    """0.6.2: the ⚙ settings page uses scrollable GPT-style cards."""
+    dock = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+    assert "SPAI_Card" in dock and "QScrollArea" in dock
+    for title in ("模型连接", "材质工作流", "自动化与权限", "诊断与维护"):
+        assert title in dock
+    # primary save button + key visibility toggle + settings-as-page toggle
+    assert "SPAI_PrimaryButton" in dock
+    assert "_toggle_key_visibility" in dock and "key_toggle" in dock
+    assert "_toggle_settings" in dock
+    # all original actions stay wired
+    for label in ("保存设置", "测试连接", "读取 Painter 上下文", "运行插件自检",
+                  "官方API直连测试", "清空对话"):
+        assert label in dock
+
+
 def test_browser_reader_renders_images_and_bypasses_403():
     browser = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(encoding="utf-8")
     # Browser-like request headers so sites stop answering 403 to the plugin.
@@ -375,7 +397,7 @@ def test_browser_app_window_mode():
 
 
 def test_browser_host_mode_real_chromium():
-    """0.6.0: real embedded Chromium browser via the browser_host process."""
+    """0.6.2: real embedded Chromium browser via the browser_host process."""
     browser = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(encoding="utf-8")
     embed = (ROOT / "plugin" / "ui" / "host_embed.py").read_text(encoding="utf-8")
     entry = (ROOT / "plugin" / "sp_ai_assistant.py").read_text(encoding="utf-8")
@@ -391,13 +413,26 @@ def test_browser_host_mode_real_chromium():
     # Cross-process embedding uses Win32 SetParent (pure ctypes).
     assert "SetParent" in embed and "WS_CHILD" in embed
     assert "sync_geometry" in embed and "set_visible" in embed
+    # 0.6.2: popups positioned via native ClientToScreen so they follow the
+    # plugin window even after external SetParent embedding.
+    host = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
+    assert "_native_global" in host and "ClientToScreen" in host
+    assert "_exec_centered" in host
+    # 0.6.2 black-box fix: geometry sync is position-aware and the host
+    # re-embeds itself when the placeholder's native window changes.
+    assert "ClientToScreen" in embed and "parent_hwnd_of" in embed
+    assert "_parent_is_placeholder" in browser and "_try_embed" in browser
+    assert "def resync" in browser and "installEventFilter" in browser
+    assert "resync_host" in browser
+    # 0.6.2: expanding the collapsed pane re-syncs the embedded window.
+    assert "_resync_host" in assistant
     # Plugin unload terminates the host process.
     assert "shutdown_browser" in entry and "shutdown_browser" in assistant
     assert "embedded_chromium_browser" in manifest["capabilities"]
 
 
 def test_browser_host_app_and_ci_packaging():
-    """0.6.0: browser host app is a full QtWebEngine browser, built and shipped by CI."""
+    """0.6.2: browser host app is a full QtWebEngine browser, built and shipped by CI."""
     host_app = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "build-installer.yml").read_text(encoding="utf-8")
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")

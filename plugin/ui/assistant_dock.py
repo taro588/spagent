@@ -6,25 +6,16 @@ from ui.chat_dock import ChatDock
 
 QtCore, QtGui, QtWidgets = qt_modules()
 
-_COLLAPSED_WIDTH = 36
 _SETTINGS_ORG = "taro588"
 _SETTINGS_APP = "SP-AI-Assistant"
 
 
-class _CollapseRail(QtWidgets.QToolButton):
-    """Narrow vertical handle shown while the side browser is collapsed."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("SPAI_Browser_Rail")
-        self.setText("SP AI Browser  ⟩")
-        self.setToolTip("展开浏览器侧栏")
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        self.setCheckable(True)
-
-
 class CollapsibleBrowser(QtWidgets.QWidget):
-    """Browser pane that collapses to a slim rail, like the ChatGPT desktop sidebar."""
+    """Browser pane that collapses away completely, like the ChatGPT desktop sidebar.
+
+    Collapse/expand is driven from the sidebar toggle in the chat header
+    (AssistantDock.browser_toggle); no floating buttons or edge rails.
+    """
     collapsed_changed = QtCore.Signal(bool)
 
     def __init__(self, start_url=HOME_URL, on_url_changed=None):
@@ -40,10 +31,6 @@ class CollapsibleBrowser(QtWidgets.QWidget):
         self.browser = BrowserPanel(start_url=start_url)
         self.browser.collapse_requested.connect(lambda: self.set_collapsed(True))
         layout.addWidget(self.browser, 1)
-
-        self.rail = _CollapseRail()
-        self.rail.clicked.connect(lambda: self.set_collapsed(False))
-        layout.addWidget(self.rail)
 
         saved_url = str(self._settings.value("browser/url", "") or "")
         if saved_url:
@@ -66,8 +53,7 @@ class CollapsibleBrowser(QtWidgets.QWidget):
             return
         self._collapsed = collapsed
         self.browser.setVisible(not collapsed)
-        self.rail.setVisible(collapsed)
-        self.setFixedWidth(_COLLAPSED_WIDTH if collapsed else 0)
+        self.setFixedWidth(0 if collapsed else 1)
         if not collapsed:
             self.setMinimumWidth(380)
             self.setMaximumWidth(16777215)
@@ -75,6 +61,18 @@ class CollapsibleBrowser(QtWidgets.QWidget):
             return
         self._settings.setValue("browser/expanded", "false" if collapsed else "true")
         self.collapsed_changed.emit(collapsed)
+        if not collapsed:
+            # The embedded Chromium window needs a few layout passes to settle
+            # after the pane re-expands — without these re-syncs it can come
+            # back misaligned (the reported "black box").
+            for delay in (0, 150, 400, 900):
+                QtCore.QTimer.singleShot(delay, self._resync_host)
+
+    def _resync_host(self):
+        try:
+            self.browser.resync_host()
+        except Exception:
+            pass
 
     def _remember_url(self, url):
         if self._building:
@@ -92,7 +90,7 @@ class CollapsibleBrowser(QtWidgets.QWidget):
 class AssistantDock(QtWidgets.QWidget):
     """Single dock: chat on the left, collapsible ChatGPT-style browser on the right."""
 
-    def __init__(self, version_text="0.6.0"):
+    def __init__(self, version_text="0.6.2"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
@@ -106,6 +104,25 @@ class AssistantDock(QtWidgets.QWidget):
         self.browser_side = CollapsibleBrowser()
         self.browser_side.browser.collapse_requested.connect(self._save_splitter)
 
+        # GPT-desktop-style sidebar toggle: far RIGHT end of the chat header,
+        # directly against the browser pane, with the Ctrl+Alt+B shortcut.
+        self.browser_toggle = QtWidgets.QToolButton()
+        self.browser_toggle.setObjectName("SPAI_Browser_Toggle")
+        self.browser_toggle.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.browser_toggle.setFixedSize(30, 28)
+        self.browser_toggle.setStyleSheet(
+            "QToolButton { background:transparent; border:none; border-radius:8px;"
+            " color:#c8cdd6; font-size:15px; }"
+            "QToolButton:hover { background:#262a31; color:#ffffff; }"
+        )
+        self.browser_toggle.clicked.connect(self.toggle_browser)
+        self.chat.header_layout.addWidget(self.browser_toggle)
+        shortcut_cls = getattr(QtGui, "QShortcut", None) or getattr(QtWidgets, "QShortcut", None)
+        if shortcut_cls is not None:
+            shortcut = shortcut_cls(QtGui.QKeySequence("Ctrl+Alt+B"), self)
+            shortcut.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
+            shortcut.activated.connect(self.toggle_browser)
+
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.splitter.setObjectName("SPAI_Assistant_Splitter")
         self.splitter.setHandleWidth(4)
@@ -117,6 +134,9 @@ class AssistantDock(QtWidgets.QWidget):
         self.splitter.splitterMoved.connect(self._save_splitter)
         root.addWidget(self.splitter)
 
+        self.browser_side.collapsed_changed.connect(self._sync_toggle)
+        self._sync_toggle(self.browser_side.is_collapsed())
+
         saved_sizes = self._settings.value("browser/splitter_sizes")
         if isinstance(saved_sizes, (list, tuple)) and len(saved_sizes) == 2:
             try:
@@ -125,6 +145,14 @@ class AssistantDock(QtWidgets.QWidget):
                     QtCore.QTimer.singleShot(0, lambda: self.splitter.setSizes(sizes))
             except Exception:
                 pass
+
+    def _sync_toggle(self, collapsed: bool):
+        if collapsed:
+            self.browser_toggle.setText("◫")
+            self.browser_toggle.setToolTip("显示/隐藏侧边面板 Ctrl+Alt+B")
+        else:
+            self.browser_toggle.setText("◫")
+            self.browser_toggle.setToolTip("显示/隐藏侧边面板 Ctrl+Alt+B")
 
     def _save_splitter(self, *_args):
         if self.browser_side.is_collapsed():

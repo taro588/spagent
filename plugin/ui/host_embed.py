@@ -30,6 +30,9 @@ user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.MoveWindow.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.BOOL]
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
 user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+user32.GetAncestor.restype = wintypes.HWND
+user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
 user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 
 GWL_STYLE = -16
@@ -83,15 +86,48 @@ def embed(child_hwnd: int, parent_hwnd: int) -> bool:
         return False
 
 
-def sync_geometry(child_hwnd: int, parent_hwnd: int) -> None:
-    """Resize the embedded window to fill the placeholder widget."""
+GA_PARENT = 1
+
+
+def parent_hwnd_of(child_hwnd: int) -> int:
+    """Return the Win32 parent of the child window (0 when it has none)."""
     try:
+        return int(user32.GetAncestor(wintypes.HWND(int(child_hwnd)), GA_PARENT) or 0)
+    except Exception:
+        return 0
+
+
+def sync_geometry(child_hwnd: int, parent_hwnd: int) -> None:
+    """Resize AND reposition the embedded window to exactly fill the
+    placeholder widget.
+
+    Position matters as much as size: the earlier version only compared
+    dimensions, so after a sidebar collapse/expand the child could sit at a
+    stale offset inside the placeholder — the dark placeholder background
+    showed around the page as the reported "black box". The child is pinned
+    to the placeholder's client origin (0, 0) whenever either position or
+    size drifts; when everything already matches this is a cheap no-op, so
+    calling it on every timer tick is safe.
+    """
+    try:
+        child = wintypes.HWND(int(child_hwnd))
+        parent = wintypes.HWND(int(parent_hwnd))
         rect = wintypes.RECT()
-        if not user32.GetClientRect(wintypes.HWND(int(parent_hwnd)), ctypes.byref(rect)):
+        if not user32.GetClientRect(parent, ctypes.byref(rect)):
             return
         width = max(1, rect.right - rect.left)
         height = max(1, rect.bottom - rect.top)
-        user32.MoveWindow(wintypes.HWND(int(child_hwnd)), 0, 0, width, height, True)
+        origin = wintypes.POINT(0, 0)
+        if not user32.ClientToScreen(parent, ctypes.byref(origin)):
+            return
+        child_rect = wintypes.RECT()
+        if user32.GetWindowRect(child, ctypes.byref(child_rect)):
+            same_size = ((child_rect.right - child_rect.left) == width
+                         and (child_rect.bottom - child_rect.top) == height)
+            same_pos = (child_rect.left == origin.x and child_rect.top == origin.y)
+            if same_size and same_pos:
+                return
+        user32.MoveWindow(child, 0, 0, width, height, True)
     except Exception:
         pass
 

@@ -1,6 +1,6 @@
-; SP AI Assistant 0.6.0
+; SP AI Assistant 0.6.2
 #define MyAppName "SP AI Assistant"
-#define MyAppVersion "0.6.0"
+#define MyAppVersion "0.6.2"
 #define MyAppPublisher "taro588"
 
 [Setup]
