@@ -60,10 +60,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "browser_host build failed" }
           if (-not (Test-Path "browser_host\dist\browser_host\browser_host.exe")) { throw "browser_host.exe missing" }
 
-      - name: Verify embedded browser geometry on Windows
+      - name: Verify in-process WebEngine geometry on Windows
         shell: pwsh
         run: |
-          python tests\\windows_embed_smoke.py browser_host\\dist\\browser_host\\browser_host.exe
+          python tests\\windows_webengine_smoke.py
 
       - name: Install Inno Setup
         shell: pwsh
