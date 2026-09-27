@@ -51,14 +51,16 @@ def enable_dpi():
 
 
 def create_parent(app):
-    widget = QtWidgets.QWidget()
-    widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
-    widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
-    widget.setStyleSheet("background:#111214;")
-    widget.resize(900, 700)
-    widget.show()
+    window = QtWidgets.QMainWindow()
+    window.resize(1000, 760)
+    host = QtWidgets.QWidget(window)
+    host.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
+    host.setAttribute(QtCore.Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+    host.setStyleSheet("background:#111214;")
+    host.setGeometry(40, 40, 900, 700)
+    window.show()
     app.processEvents()
-    return widget, int(widget.winId())
+    return window, host, int(host.winId())
 
 
 
@@ -125,7 +127,7 @@ def main():
             [str(exe), "--state-file", str(state), "--start-url", "about:blank"],
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        parent_widget, parent = create_parent(app)
+        parent_window, parent_widget, parent = create_parent(app)
         try:
             child = wait_state(state)
             awareness_fn = getattr(user32, "GetWindowDpiAwarenessContext", None)
@@ -165,7 +167,7 @@ def main():
             except Exception:
                 pass
             try:
-                parent_widget.close()
+                parent_window.close()
             except Exception:
                 pass
             try:
