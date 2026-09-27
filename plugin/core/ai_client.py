@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 
 
-AI_CLIENT_BUILD = "0.4.3"
+AI_CLIENT_BUILD = "0.5.0"
 
 PROVIDERS = {
     "OpenAI": {
@@ -378,7 +378,17 @@ def _anthropic(messages, model, api_key, base_url):
         "model": model,
         "max_tokens": 4096,
         "messages": [{"role": m.get("role"), "content": _anthropic_content(m.get("content"))} for m in user_messages],
-        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
+        "tools": [
+            {
+                # Custom tool keeps the full official function-calling surface so
+                # Claude can still drive Painter exactly like the OpenAI path.
+                "type": "custom",
+                "name": "painter_actions",
+                "description": PAINTER_ACTION_TOOL["function"]["description"],
+                "input_schema": PAINTER_ACTION_TOOL["function"]["parameters"],
+            },
+            {"type": "web_search_20250305", "name": "web_search", "max_uses": 5},
+        ],
     }
     if system_parts:
         payload["system"] = "\n".join(system_parts).strip()
@@ -391,6 +401,16 @@ def _anthropic(messages, model, api_key, base_url):
             "Content-Type": "application/json",
         },
     )
+    for block in data.get("content", []) or []:
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "tool_use"
+            and block.get("name") == "painter_actions"
+            and isinstance(block.get("input"), dict)
+        ):
+            # Claude decided to operate Painter: return the allow-listed plan
+            # so the plugin can validate and execute it via the official API.
+            return json.dumps(block["input"], ensure_ascii=False)
     text = "\n".join(
         block.get("text", "")
         for block in data.get("content", [])
@@ -414,7 +434,23 @@ def _gemini(messages, model, api_key, base_url):
                 "role": "model" if role == "assistant" else "user",
                 "parts": _gemini_parts(content),
             })
-    payload = {"contents": contents, "tools": [{"google_search": {}}]}
+    payload = {
+        "contents": contents,
+        # google_search keeps the model's native web capability; the function
+        # declaration lets Gemini drive Painter through the same plan pipeline.
+        "tools": [
+            {"google_search": {}},
+            {
+                "functionDeclarations": [
+                    {
+                        "name": "painter_actions",
+                        "description": PAINTER_ACTION_TOOL["function"]["description"],
+                        "parameters": PAINTER_ACTION_TOOL["function"]["parameters"],
+                    }
+                ]
+            },
+        ],
+    }
     if system_parts:
         payload["systemInstruction"] = {"parts": [{"text": "\n".join(system_parts)}]}
     data = _post(
@@ -426,6 +462,18 @@ def _gemini(messages, model, api_key, base_url):
     if not candidates:
         raise AIError("Gemini 返回成功，但没有候选输出")
     parts = (candidates[0].get("content") or {}).get("parts") or []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        call = part.get("functionCall")
+        if (
+            isinstance(call, dict)
+            and call.get("name") == "painter_actions"
+            and isinstance(call.get("args"), dict)
+        ):
+            # Gemini decided to operate Painter: return the allow-listed plan
+            # for local validation and execution via the official API.
+            return json.dumps(call["args"], ensure_ascii=False)
     text = "\n".join(
         str(p.get("text", "")) for p in parts
         if isinstance(p, dict) and p.get("text")

@@ -1,7 +1,7 @@
 {
   "id": "com.taro588.sp-ai-assistant",
   "name": "SP AI Assistant",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "api": "python",
   "min_painter_version": "7.2.0",
   "max_tested_painter_version": "11.0.x",
@@ -24,6 +24,7 @@
     "selected_layer_operations",
     "texture_export",
     "embedded_browser",
+    "collapsible_side_browser",
     "persistent_dock_layout"
   ],
   "compatibility": {
