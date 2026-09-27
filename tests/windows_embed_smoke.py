@@ -132,8 +132,6 @@ def main():
                 # Capture the native failure details instead of hiding them.
                 # This branch is only for CI diagnosis of the cross-process
                 # SetParent contract.
-                user32.SetLastError = getattr(user32, "SetLastError", None)
-                user32.GetLastError.restype = wintypes.DWORD if hasattr(user32, "GetLastError") else None
                 get_style = user32.GetWindowLongPtrW
                 get_style.restype = ctypes.c_longlong
                 style = int(get_style(wintypes.HWND(child), -16))
