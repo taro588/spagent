@@ -655,7 +655,11 @@ class HostView(QtWidgets.QWidget):
     def _try_embed(self):
         if self._embedded:
             return
-        if not self._hwnd:
+        # The browser host can recreate its native top-level HWND during
+        # startup/show. Never keep using a stale handle from the first state
+        # write; refresh the state whenever the cached handle is invalid.
+        if not self._hwnd or not host_embed.is_window(self._hwnd):
+            self._hwnd = 0
             state = self._read_state()
             hwnd = int(state.get("hwnd") or 0)
             if host_embed.is_window(hwnd):
