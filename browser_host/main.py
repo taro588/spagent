@@ -405,8 +405,7 @@ class BrowserWindow(QtWidgets.QMainWindow):
 
         central = QtWidgets.QWidget()
         root = QtWidgets.QVBoxLayout(central)
-        root.setContentsMargins(6, 6, 6, 0)
-        root.setSpacing(6)
+        # Embedded mode must have no QMainWindow/central margins; the Win32\n        # child is resized to this exact client rectangle by host_embed.\n        root.setContentsMargins(0, 0, 0, 0)\n        root.setSpacing(0)
         self.setCentralWidget(central)
 
         # --- chrome: tab strip + nav share one unified background (Chrome-like) ---
@@ -520,8 +519,7 @@ class BrowserWindow(QtWidgets.QMainWindow):
         self.stack = QtWidgets.QStackedWidget()
         root.addWidget(self.stack, 1)
 
-        self.statusBar().showMessage("")
-        self._zoom_label = None
+        # A status bar leaves a permanent bottom strip when this QMainWindow\n        # is reparented into Painter. Keep status messages in the browser UI instead.\n        self.statusBar().hide()\n        self._zoom_label = None
         self._find_was_visible = False
 
         for seq, slot in (
