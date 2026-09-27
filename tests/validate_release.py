@@ -410,7 +410,8 @@ def test_browser_host_mode_real_chromium():
     assert "HostView" in browser
     assert "_find_browser_host_exe" in browser
     assert "browser_host.exe" in browser
-    assert 'self._mode = "host"' in browser
+    assert 'self._mode = "web"' in browser
+    assert 'elif _find_browser_host_exe()' in browser
     assert "_poll_host_url" in browser
     assert "shutdown_host" in browser
     # Cross-process embedding uses Win32 SetParent (pure ctypes).
@@ -435,11 +436,12 @@ def test_browser_host_mode_real_chromium():
     assert "embedded_chromium_browser" in manifest["capabilities"]
 
 
-def test_windows_embed_smoke_test_present():
-    smoke = (ROOT / "tests" / "windows_embed_smoke.py").read_text(encoding="utf-8")
-    assert "SetParent" in smoke or "host_embed.embed" in smoke
-    assert "resize(" in smoke and "assert_full" in smoke
-    assert "GetWindowDpiAwarenessContext" in smoke
+def test_windows_webengine_smoke_test_present():
+    smoke = (ROOT / "tests" / "windows_webengine_smoke.py").read_text(encoding="utf-8")
+    assert "QWebEngineView" in smoke
+    assert "resize(" in smoke and "view.grab" in smoke
+    workflow = (ROOT / ".github" / "workflows" / "build-installer.yml").read_text(encoding="utf-8")
+    assert "tests\\windows_webengine_smoke.py" in workflow
 
 
 def test_browser_host_app_and_ci_packaging():
