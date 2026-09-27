@@ -86,7 +86,11 @@ def embed(child_hwnd: int, parent_hwnd: int) -> bool:
         parent_style = user32.GetWindowLongPtrW(parent, GWL_STYLE)
         if not (parent_style & WS_CLIPCHILDREN):
             user32.SetWindowLongPtrW(parent, GWL_STYLE, parent_style | WS_CLIPCHILDREN)
-        if not user32.SetParent(child, parent):
+        # SetParent returns the *previous* parent HWND.  A top-level
+        # browser has no previous parent, so a successful call legitimately
+        # returns NULL.  Do not treat that NULL return value as failure.
+        user32.SetParent(child, parent)
+        if user32.GetParent(child) != parent:
             return False
         user32.SetWindowPos(child, None, 0, 0, 0, 0,
                             SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW)
