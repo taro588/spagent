@@ -48,6 +48,9 @@ SW_SHOW = 5
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
+SWP_SHOWWINDOW = 0x0040
+WS_CLIPCHILDREN = 0x02000000
+WS_CLIPSIBLINGS = 0x04000000
 
 _REMOVE_STYLE = WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
 
@@ -74,12 +77,15 @@ def embed(child_hwnd: int, parent_hwnd: int) -> bool:
         if not user32.IsWindow(child) or not user32.IsWindow(parent):
             return False
         style = user32.GetWindowLongPtrW(child, GWL_STYLE)
-        style = (style & ~_REMOVE_STYLE) | WS_CHILD
+        style = (style & ~_REMOVE_STYLE) | WS_CHILD | WS_CLIPSIBLINGS
         user32.SetWindowLongPtrW(child, GWL_STYLE, style)
+        parent_style = user32.GetWindowLongPtrW(parent, GWL_STYLE)
+        if not (parent_style & WS_CLIPCHILDREN):
+            user32.SetWindowLongPtrW(parent, GWL_STYLE, parent_style | WS_CLIPCHILDREN)
         if not user32.SetParent(child, parent):
             return False
         user32.SetWindowPos(child, None, 0, 0, 0, 0,
-                            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
+                            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW)
         user32.ShowWindow(child, SW_SHOW)
         return True
     except Exception:
@@ -127,7 +133,7 @@ def sync_geometry(child_hwnd: int, parent_hwnd: int) -> None:
             same_pos = (child_rect.left == origin.x and child_rect.top == origin.y)
             if same_size and same_pos:
                 return
-        user32.MoveWindow(child, 0, 0, width, height, True)
+        user32.SetWindowPos(child, None, 0, 0, width, height,\n                            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW)\n        user32.ShowWindow(child, SW_SHOW)
     except Exception:
         pass
 
