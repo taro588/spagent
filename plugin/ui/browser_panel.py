@@ -870,36 +870,27 @@ class BrowserPanel(QtWidgets.QWidget):
         self._nav_widget.setLayout(nav)
         root.addWidget(self._nav_widget)
 
-        # --- content: host process (real Chromium) > in-process WebEngine > reader ---
-        host_exe = _find_browser_host_exe()
-        if host_exe:
-            self._mode = "host"
-            self.view = None
-            self.reader = None
-            # In host mode the embedded browser draws its own chrome and must
-            # sit flush against the chat pane — any outer margin shows up as
-            # the dark "black box" frame users reported.
-            root.setContentsMargins(0, 0, 0, 0)
-            self.host = HostView(host_exe, _browser_host_state_file())
-            root.addWidget(self.host, 1)
-            # The browser_host process draws its own GPT-style chrome;
-            # the whole Qt tab strip stays hidden in this mode.
-            self._strip_widget.setVisible(False)
-            self._nav_widget.setVisible(False)
-            self._last_host_url = ""
-            self._url_timer = QtCore.QTimer(self)
-            self._url_timer.timeout.connect(self._poll_host_url)
-            self._url_timer.start(2000)
-        elif WEB_ENGINE_AVAILABLE:
+        # --- content: in-process WebEngine > host fallback > reader ---
+        # Qt's own QWebEngineView is a real QWidget and is the stable embedding
+        # path for Painter versions that expose QtWebEngine.  The old
+        # cross-process SetParent host remains only as a compatibility fallback
+        # for Painter installations without WebEngine.
+        root.setContentsMargins(0, 0, 0, 0)
+        if WEB_ENGINE_AVAILABLE:
             _prepare_persistent_profile()
             self.view = QtWebEngineWidgets.QWebEngineView()
+            self.view.setStyleSheet("QWebEngineView { border:0; background:#111214; }")
+            self.view.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Expanding,
+            )
             self.view.urlChanged.connect(self._on_web_url)
             root.addWidget(self.view, 1)
             self.view.setUrl(QtCore.QUrl(start_url))
             self._mode = "web"
             self.reader = None
             self._strip_widget.setVisible(False)
-        else:
+        elif _find_browser_host_exe():
             self.view = None
             self._mode = "reader"
             self.reader = ReaderPanel()
