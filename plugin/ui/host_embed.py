@@ -30,7 +30,7 @@ user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.MoveWindow.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.BOOL]
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
 user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
-user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+user32.RedrawWindow.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT), wintypes.HANDLE, wintypes.UINT]
 user32.GetAncestor.restype = wintypes.HWND
 user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
 user32.SetForegroundWindow.argtypes = [wintypes.HWND]
@@ -49,6 +49,10 @@ SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
 SWP_SHOWWINDOW = 0x0040
+RDW_INVALIDATE = 0x0001
+RDW_ERASE = 0x0004
+RDW_UPDATENOW = 0x0100
+RDW_ALLCHILDREN = 0x0080
 WS_CLIPCHILDREN = 0x02000000
 WS_CLIPSIBLINGS = 0x04000000
 
@@ -104,16 +108,12 @@ def parent_hwnd_of(child_hwnd: int) -> int:
 
 
 def sync_geometry(child_hwnd: int, parent_hwnd: int) -> None:
-    """Resize AND reposition the embedded window to exactly fill the
-    placeholder widget.
+    """Force the host HWND to exactly cover the parent client rectangle.
 
-    Position matters as much as size: the earlier version only compared
-    dimensions, so after a sidebar collapse/expand the child could sit at a
-    stale offset inside the placeholder — the dark placeholder background
-    showed around the page as the reported "black box". The child is pinned
-    to the placeholder's client origin (0, 0) whenever either position or
-    size drifts; when everything already matches this is a cheap no-op, so
-    calling it on every timer tick is safe.
+    The host and Painter are separate DPI-aware processes. Comparing screen
+    rectangles here is unsafe because Windows can virtualize coordinates
+    differently across DPI contexts. The parent's client size is the source
+    of truth; reapply it every time and invalidate the compositor frame.
     """
     try:
         child = wintypes.HWND(int(child_hwnd))
@@ -123,19 +123,15 @@ def sync_geometry(child_hwnd: int, parent_hwnd: int) -> None:
             return
         width = max(1, rect.right - rect.left)
         height = max(1, rect.bottom - rect.top)
-        origin = wintypes.POINT(0, 0)
-        if not user32.ClientToScreen(parent, ctypes.byref(origin)):
-            return
-        child_rect = wintypes.RECT()
-        if user32.GetWindowRect(child, ctypes.byref(child_rect)):
-            same_size = ((child_rect.right - child_rect.left) == width
-                         and (child_rect.bottom - child_rect.top) == height)
-            same_pos = (child_rect.left == origin.x and child_rect.top == origin.y)
-            if same_size and same_pos:
-                return
-        user32.SetWindowPos(child, None, 0, 0, width, height,
-                            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+        user32.SetWindowPos(
+            child, None, 0, 0, width, height,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+        )
         user32.ShowWindow(child, SW_SHOW)
+        user32.RedrawWindow(
+            child, None, None,
+            RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN,
+        )
     except Exception:
         pass
 
