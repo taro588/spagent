@@ -90,7 +90,7 @@ def embed(child_hwnd: int, parent_hwnd: int) -> bool:
         # browser has no previous parent, so a successful call legitimately
         # returns NULL.  Do not treat that NULL return value as failure.
         user32.SetParent(child, parent)
-        if user32.GetParent(child) != parent:
+        if int(user32.GetParent(child) or 0) != int(parent):
             return False
         user32.SetWindowPos(child, None, 0, 0, 0, 0,
                             SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW)
