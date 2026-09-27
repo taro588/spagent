@@ -1929,6 +1929,10 @@ class BrowserWindow(QtWidgets.QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        # Publish the final native HWND immediately after the window is shown.
+        # The handle can differ from the pre-show handle written during
+        # construction, so the embedding plugin must never see a stale HWND.
+        self._write_state()
         QtCore.QTimer.singleShot(300, self._write_state)
         QtCore.QTimer.singleShot(400, self._restore_focus)
 
