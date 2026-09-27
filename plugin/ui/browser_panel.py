@@ -891,6 +891,19 @@ class BrowserPanel(QtWidgets.QWidget):
             self.reader = None
             self._strip_widget.setVisible(False)
         elif _find_browser_host_exe():
+            host_exe = _find_browser_host_exe()
+            self._mode = "host"
+            self.view = None
+            self.reader = None
+            self.host = HostView(host_exe, _browser_host_state_file())
+            root.addWidget(self.host, 1)
+            self._strip_widget.setVisible(False)
+            self._nav_widget.setVisible(False)
+            self._last_host_url = ""
+            self._url_timer = QtCore.QTimer(self)
+            self._url_timer.timeout.connect(self._poll_host_url)
+            self._url_timer.start(2000)
+        else:
             self.view = None
             self._mode = "reader"
             self.reader = ReaderPanel()
