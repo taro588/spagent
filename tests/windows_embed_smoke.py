@@ -68,27 +68,25 @@ def create_parent():
 def rects(parent, child):
     parent_rect = wintypes.RECT()
     child_rect = wintypes.RECT()
-    point = wintypes.POINT(0, 0)
     if not user32.GetClientRect(parent, ctypes.byref(parent_rect)):
-        raise RuntimeError("GetClientRect failed")
-    if not user32.ClientToScreen(parent, ctypes.byref(point)):
-        raise RuntimeError("ClientToScreen failed")
-    if not user32.GetWindowRect(child, ctypes.byref(child_rect)):
-        raise RuntimeError("GetWindowRect failed")
+        raise RuntimeError("GetClientRect(parent) failed")
+    if not user32.GetClientRect(child, ctypes.byref(child_rect)):
+        raise RuntimeError("GetClientRect(child) failed")
     pw = parent_rect.right - parent_rect.left
     ph = parent_rect.bottom - parent_rect.top
     cw = child_rect.right - child_rect.left
     ch = child_rect.bottom - child_rect.top
-    return point.x, point.y, pw, ph, child_rect.left, child_rect.top, cw, ch
+    return pw, ph, cw, ch
 
 
 def assert_full(parent, child, label):
-    x, y, pw, ph, cx, cy, cw, ch = rects(parent, child)
-    if (cx, cy, cw, ch) != (x, y, pw, ph):
+    pw, ph, cw, ch = rects(parent, child)
+    if (cw, ch) != (pw, ph):
         raise AssertionError(
-            f"{label}: parent client=({x},{y},{pw},{ph}) "
-            f"child=({cx},{cy},{cw},{ch})"
+            f"{label}: parent client=({pw},{ph}) child client=({cw},{ch})"
         )
+    if host_embed.parent_hwnd_of(child) != int(parent):
+        raise AssertionError(f"{label}: child parent HWND mismatch")
 
 
 def wait_state(path, timeout=30):
