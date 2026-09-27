@@ -441,7 +441,7 @@ def test_windows_webengine_smoke_test_present():
     assert "QWebEngineView" in smoke
     assert "resize(" in smoke and "view.grab" in smoke
     workflow = (ROOT / ".github" / "workflows" / "build-installer.yml").read_text(encoding="utf-8")
-    assert "tests\\windows_webengine_smoke.py" in workflow
+    assert "windows_webengine_smoke.py" in workflow
 
 
 def test_browser_host_app_and_ci_packaging():
