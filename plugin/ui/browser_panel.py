@@ -578,7 +578,10 @@ class HostView(QtWidgets.QWidget):
         layout.addWidget(self.status)
         self.placeholder = QtWidgets.QWidget()
         self.placeholder.setObjectName("SPAI_Browser_Host_Placeholder")
-        self.placeholder.setStyleSheet("background:#111214;")
+        self.placeholder.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
+        self.placeholder.setAutoFillBackground(True)
+        self.placeholder.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+        self.placeholder.setStyleSheet("background:#111214; border:0;")
         self.placeholder.setVisible(False)
         layout.addWidget(self.placeholder, 1)
 
@@ -589,6 +592,7 @@ class HostView(QtWidgets.QWidget):
         # Sync immediately whenever the placeholder itself is resized, moved
         # to a new native window or re-laid-out (sidebar collapse/expand).
         self.placeholder.installEventFilter(self)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
 
     # ---------- process lifecycle ----------
 
