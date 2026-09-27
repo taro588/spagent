@@ -89,16 +89,23 @@ def assert_full(parent, child, label):
 
 def wait_state(path, timeout=30):
     deadline = time.time() + timeout
+    last = 0
+    stable_since = 0.0
     while time.time() < deadline:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             hwnd = int(data.get("hwnd") or 0)
+            now = time.time()
             if host_embed.is_window(hwnd):
-                return hwnd
+                if hwnd != last:
+                    last = hwnd
+                    stable_since = now
+                elif now - stable_since >= 0.8:
+                    return hwnd
         except Exception:
             pass
-        time.sleep(0.2)
-    raise TimeoutError("browser_host did not publish a valid HWND")
+        time.sleep(0.1)
+    raise TimeoutError("browser_host did not publish a stable valid HWND")
 
 
 def main():
