@@ -10,7 +10,7 @@ from core.qt_compat import qt_modules
 _widgets = []
 _dock = None
 _menu_actions = []
-PLUGIN_VERSION = "0.5.2"
+PLUGIN_VERSION = "0.6.0"
 MIN_PAINTER_VERSION = (7, 2, 0)
 
 
@@ -115,6 +115,11 @@ def start_plugin():
 
 def close_plugin():
     global _dock, _menu_actions
+    for widget in list(_widgets):
+        try:
+            widget.shutdown_browser()
+        except Exception:
+            pass
     for action in list(_menu_actions):
         try:
             substance_painter.ui.delete_ui_element(action)

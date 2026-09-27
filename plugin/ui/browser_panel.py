@@ -12,6 +12,7 @@ from html.parser import HTMLParser
 from urllib.parse import quote, urljoin
 
 from core.qt_compat import qt_modules
+from ui import host_embed
 
 QtCore, QtGui, QtWidgets = qt_modules()
 
@@ -551,6 +552,164 @@ class ReaderPanel(QtWidgets.QWidget):
             self.show_home()
 
 
+class HostView(QtWidgets.QWidget):
+    """Hosts the standalone browser_host process (real Chromium) embedded
+    into this widget via Win32 SetParent — a full browser inside the dock."""
+
+    host_ready = QtCore.Signal(bool)
+
+    def __init__(self, exe_path, state_file, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SPAI_Browser_Host")
+        self._exe = exe_path
+        self._state_file = state_file
+        self._cmd_file = state_file + ".cmd"
+        self._hwnd = 0
+        self._process = None
+        self._embedded = False
+        self._relaunch_count = 0
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.status = QtWidgets.QLabel("正在启动内置浏览器……")
+        self.status.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.status.setStyleSheet("color:#8f96a3; padding:24px;")
+        layout.addWidget(self.status)
+        self.placeholder = QtWidgets.QWidget()
+        self.placeholder.setObjectName("SPAI_Browser_Host_Placeholder")
+        self.placeholder.setStyleSheet("background:#111214;")
+        self.placeholder.setVisible(False)
+        layout.addWidget(self.placeholder, 1)
+
+        self._timer = QtCore.QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(500)
+        self._launch_or_attach()
+
+    # ---------- process lifecycle ----------
+
+    def _read_state(self):
+        try:
+            with open(self._state_file, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except Exception:
+            return {}
+
+    def _launch_or_attach(self):
+        state = self._read_state()
+        hwnd = int(state.get("hwnd") or 0)
+        if host_embed.is_window(hwnd):
+            self._hwnd = hwnd
+            return
+        try:
+            self._process = subprocess.Popen(
+                [self._exe, "--state-file", self._state_file],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            self.status.setText("✗ 内置浏览器启动失败：" + str(exc))
+
+    def _tick(self):
+        if not self._embedded:
+            if not self._hwnd:
+                state = self._read_state()
+                hwnd = int(state.get("hwnd") or 0)
+                if host_embed.is_window(hwnd):
+                    self._hwnd = hwnd
+            if self._hwnd:
+                parent_hwnd = int(self.placeholder.winId())
+                if host_embed.embed(self._hwnd, parent_hwnd):
+                    self._embedded = True
+                    self.status.setVisible(False)
+                    self.placeholder.setVisible(True)
+                    host_embed.sync_geometry(self._hwnd, parent_hwnd)
+                    host_embed.set_visible(self._hwnd, self.isVisible())
+                    self.host_ready.emit(True)
+            return
+        # embedded: watch for host crash and relaunch
+        if not host_embed.is_window(self._hwnd):
+            self._embedded = False
+            self._hwnd = 0
+            self._relaunch_count += 1
+            if self._relaunch_count <= 3:
+                self.status.setText("内置浏览器已退出，正在重启……")
+                self.status.setVisible(True)
+                self.placeholder.setVisible(False)
+                self._launch_or_attach()
+            else:
+                self.status.setText("✗ 内置浏览器反复退出，请重启插件")
+                self.status.setVisible(True)
+
+    # ---------- geometry / visibility ----------
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._embedded and self._hwnd:
+            host_embed.sync_geometry(self._hwnd, int(self.placeholder.winId()))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._embedded and self._hwnd:
+            host_embed.set_visible(self._hwnd, True)
+            host_embed.sync_geometry(self._hwnd, int(self.placeholder.winId()))
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if self._hwnd:
+            host_embed.set_visible(self._hwnd, False)
+
+    # ---------- public API ----------
+
+    def navigate(self, url):
+        """Ask the host browser to open a URL (new tab) via the command file."""
+        url = str(url or "").strip()
+        if not url:
+            return
+        try:
+            with open(self._cmd_file, "w", encoding="utf-8") as handle:
+                handle.write("url:" + url)
+        except Exception:
+            pass
+
+    def current_url(self):
+        return str(self._read_state().get("url") or "")
+
+    def shutdown(self):
+        """Terminate the host browser (called on Painter plugin unload)."""
+        try:
+            with open(self._cmd_file, "w", encoding="utf-8") as handle:
+                handle.write("exit")
+        except Exception:
+            pass
+        if self._process is not None:
+            try:
+                self._process.terminate()
+            except Exception:
+                pass
+        else:
+            pid = int(self._read_state().get("pid") or 0)
+            if pid:
+                try:
+                    import signal
+                    os.kill(pid, signal.SIGTERM)
+                except Exception:
+                    pass
+
+
+def _find_browser_host_exe():
+    plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidate = os.path.join(plugin_root, "browser_host", "browser_host.exe")
+    return candidate if os.path.isfile(candidate) else ""
+
+
+def _browser_host_state_file():
+    return os.path.join(
+        os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+        "SP AI Assistant", "browser_host.state",
+    )
+
+
 class _TabBar(QtWidgets.QTabBar):
     """ChatGPT-desktop-style tab strip."""
 
@@ -640,10 +799,26 @@ class BrowserPanel(QtWidgets.QWidget):
         app_btn.setToolTip("用应用窗口打开当前网页（完整渲染）")
         app_btn.clicked.connect(self._open_in_app)
         nav.addWidget(app_btn)
-        root.addLayout(nav)
+        self._nav_widget = QtWidgets.QWidget()
+        self._nav_widget.setLayout(nav)
+        root.addWidget(self._nav_widget)
 
-        # --- content ---
-        if WEB_ENGINE_AVAILABLE:
+        # --- content: host process (real Chromium) > in-process WebEngine > reader ---
+        host_exe = _find_browser_host_exe()
+        if host_exe:
+            self._mode = "host"
+            self.view = None
+            self.reader = None
+            self.host = HostView(host_exe, _browser_host_state_file())
+            root.addWidget(self.host, 1)
+            self.tab_bar.setVisible(False)
+            plus.setVisible(False)
+            self._nav_widget.setVisible(False)
+            self._last_host_url = ""
+            self._url_timer = QtCore.QTimer(self)
+            self._url_timer.timeout.connect(self._poll_host_url)
+            self._url_timer.start(2000)
+        elif WEB_ENGINE_AVAILABLE:
             _prepare_persistent_profile()
             self.view = QtWebEngineWidgets.QWebEngineView()
             self.view.urlChanged.connect(self._on_web_url)
@@ -651,6 +826,8 @@ class BrowserPanel(QtWidgets.QWidget):
             self.view.setUrl(QtCore.QUrl(start_url))
             self._mode = "web"
             self.reader = None
+            self.tab_bar.setVisible(False)
+            plus.setVisible(False)
         else:
             self.view = None
             self._mode = "reader"
@@ -748,7 +925,9 @@ class BrowserPanel(QtWidgets.QWidget):
     def navigate_to(self, url):
         url = self._normalize(url)
         self.address.setText(url)
-        if self._mode == "web" and self.view is not None:
+        if self._mode == "host":
+            self.host.navigate(url)
+        elif self._mode == "web" and self.view is not None:
             self.view.setUrl(QtCore.QUrl(url))
         elif self._mode == "reader":
             if "bing.com/search" in url:
@@ -759,9 +938,25 @@ class BrowserPanel(QtWidgets.QWidget):
                 self.reader.load_url(url)
 
     def current_url(self):
+        if self._mode == "host":
+            return self.host.current_url()
         if self._mode == "web" and self.view is not None:
             return self.view.url().toString()
         return self.address.text().strip()
+
+    def _poll_host_url(self):
+        url = self.host.current_url()
+        if url and url != "about:blank" and url != self._last_host_url:
+            self._last_host_url = url
+            self.url_changed.emit(url)
+
+    def shutdown_host(self):
+        """Terminate the embedded browser process (plugin unload)."""
+        if self._mode == "host" and getattr(self, "host", None) is not None:
+            try:
+                self.host.shutdown()
+            except Exception:
+                pass
 
     def _navigate(self):
         text = self.address.text().strip()
@@ -789,7 +984,9 @@ class BrowserPanel(QtWidgets.QWidget):
             self.reader.reload_current()
 
     def _home(self):
-        if self._mode == "web":
+        if self._mode == "host":
+            self.navigate_to(self._home_url)
+        elif self._mode == "web":
             self.navigate_to(self._home_url)
         else:
             self.address.clear()

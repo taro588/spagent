@@ -92,7 +92,7 @@ class CollapsibleBrowser(QtWidgets.QWidget):
 class AssistantDock(QtWidgets.QWidget):
     """Single dock: chat on the left, collapsible ChatGPT-style browser on the right."""
 
-    def __init__(self, version_text="0.5.2"):
+    def __init__(self, version_text="0.6.0"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
@@ -141,3 +141,10 @@ class AssistantDock(QtWidgets.QWidget):
 
     def expand_browser(self):
         self.browser_side.expand()
+
+    def shutdown_browser(self):
+        """Terminate the embedded browser host process on plugin unload."""
+        try:
+            self.browser_side.browser.shutdown_host()
+        except Exception:
+            pass

@@ -1,6 +1,6 @@
-; SP AI Assistant 0.5.2
+; SP AI Assistant 0.6.0
 #define MyAppName "SP AI Assistant"
-#define MyAppVersion "0.5.2"
+#define MyAppVersion "0.6.0"
 #define MyAppPublisher "taro588"
 
 [Setup]
@@ -26,12 +26,15 @@ Source: "..\plugin\sp_ai_assistant.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\plugin\manifest.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\plugin\core\*"; DestDir: "{app}\core"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\plugin\ui\*"; DestDir: "{app}\ui"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Embedded Chromium browser host (built by CI into browser_host\dist\browser_host)
+Source: "..\browser_host\dist\browser_host\*"; DestDir: "{app}\browser_host"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [UninstallDelete]
 Type: files; Name: "{app}\sp_ai_assistant.py"
 Type: files; Name: "{app}\manifest.json"
 Type: files; Name: "{app}\core\*"
 Type: files; Name: "{app}\ui\*"
+Type: filesandordirs; Name: "{app}\browser_host"
 
 [Code]
 const

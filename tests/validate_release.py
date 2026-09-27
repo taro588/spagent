@@ -12,7 +12,7 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.5.2"
+    assert data["version"] == "0.6.0"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["max_tested_painter_version"] == "11.0.x"
@@ -32,13 +32,13 @@ def test_release_versions_are_synchronized():
     assert f'#define MyAppVersion "{version}"' in iss
     assert f"name: SP-AI-Assistant-Setup-{version}" in workflow
     assert f"SP_AI_Assistant_Setup_{{#MyAppVersion}}" in iss
-    assert "SP_AI_Assistant_Setup_0.5.2.sha256" in workflow
+    assert "SP_AI_Assistant_Setup_0.6.0.sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
 
 
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.5.2"' in iss
+    assert '#define MyAppVersion "0.6.0"' in iss
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
     assert 'Source: "..\\plugin\\core\\*"' in iss
@@ -372,6 +372,47 @@ def test_browser_app_window_mode():
     assert "open_app_window" in browser
     assert "--app=" in browser
     assert "msedge.exe" in browser and "chrome.exe" in browser
+
+
+def test_browser_host_mode_real_chromium():
+    """0.6.0: real embedded Chromium browser via the browser_host process."""
+    browser = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(encoding="utf-8")
+    embed = (ROOT / "plugin" / "ui" / "host_embed.py").read_text(encoding="utf-8")
+    entry = (ROOT / "plugin" / "sp_ai_assistant.py").read_text(encoding="utf-8")
+    assistant = (ROOT / "plugin" / "ui" / "assistant_dock.py").read_text(encoding="utf-8")
+    manifest = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
+    # Plugin discovers and hosts the standalone browser process.
+    assert "HostView" in browser
+    assert "_find_browser_host_exe" in browser
+    assert "browser_host.exe" in browser
+    assert 'self._mode = "host"' in browser
+    assert "_poll_host_url" in browser
+    assert "shutdown_host" in browser
+    # Cross-process embedding uses Win32 SetParent (pure ctypes).
+    assert "SetParent" in embed and "WS_CHILD" in embed
+    assert "sync_geometry" in embed and "set_visible" in embed
+    # Plugin unload terminates the host process.
+    assert "shutdown_browser" in entry and "shutdown_browser" in assistant
+    assert "embedded_chromium_browser" in manifest["capabilities"]
+
+
+def test_browser_host_app_and_ci_packaging():
+    """0.6.0: browser host app is a full QtWebEngine browser, built and shipped by CI."""
+    host_app = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "build-installer.yml").read_text(encoding="utf-8")
+    iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
+    # A real browser: WebEngine view + persistent profile + tabs + navigation.
+    assert "QWebEngineView" in host_app
+    assert "QWebEngineProfile" in host_app
+    assert "ForcePersistentCookies" in host_app
+    assert "新标签页" in host_app and "开始浏览" in host_app
+    assert "QTabBar" in host_app and "setTabsClosable" in host_app
+    # Command channel lets the plugin drive the browser; state file reports hwnd.
+    assert '"url:"' in host_app and '"hwnd"' in host_app
+    # CI builds the exe and the installer ships it.
+    assert "PyInstaller" in workflow
+    assert "browser_host\\dist\\browser_host\\browser_host.exe" in workflow
+    assert "browser_host" in iss
 
 
 def test_all_providers_keep_full_model_capabilities():
