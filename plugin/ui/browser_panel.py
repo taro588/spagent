@@ -617,7 +617,7 @@ class HostView(QtWidgets.QWidget):
             return
         try:
             self._process = subprocess.Popen(
-                [self._exe, "--state-file", self._state_file],
+                [self._exe, "--embedded", "--state-file", self._state_file],
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except Exception as exc:
