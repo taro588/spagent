@@ -434,6 +434,11 @@ def test_browser_host_mode_real_chromium():
     assert "def resync" in browser and "installEventFilter" in browser
     assert "self.placeholder.setGeometry(self.rect())" in browser
     assert "self.status.setGeometry(self.rect())" in browser
+    assert '"--embedded", "--state-file"' in browser
+    host = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
+    assert "FramelessWindowHint" in host
+    assert 'embedded = "--embedded" in sys.argv[1:]' in host
+    assert "embedded=embedded" in host
     assert "resync_host" in browser
     # 0.6.7: expanding the collapsed pane re-syncs the embedded window.
     assert "_resync_host" in assistant
