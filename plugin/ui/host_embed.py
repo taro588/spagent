@@ -36,6 +36,7 @@ user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
 user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 
 GWL_STYLE = -16
+GWL_EXSTYLE = -20
 WS_CHILD = 0x40000000
 WS_POPUP = 0x80000000
 WS_CAPTION = 0x00C00000
@@ -43,6 +44,11 @@ WS_THICKFRAME = 0x00040000
 WS_MINIMIZEBOX = 0x00020000
 WS_MAXIMIZEBOX = 0x00010000
 WS_SYSMENU = 0x00080000
+WS_BORDER = 0x00800000
+WS_DLGFRAME = 0x00400000
+WS_EX_DLGMODALFRAME = 0x00000001
+WS_EX_WINDOWEDGE = 0x00000100
+WS_EX_CLIENTEDGE = 0x00000200
 SW_HIDE = 0
 SW_SHOW = 5
 SWP_NOZORDER = 0x0004
@@ -56,7 +62,11 @@ RDW_ALLCHILDREN = 0x0080
 WS_CLIPCHILDREN = 0x02000000
 WS_CLIPSIBLINGS = 0x04000000
 
-_REMOVE_STYLE = WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
+_REMOVE_STYLE = (
+    WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX |
+    WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME
+)
+_REMOVE_EXSTYLE = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE
 
 
 def last_error() -> int:
@@ -81,8 +91,13 @@ def embed(child_hwnd: int, parent_hwnd: int) -> bool:
         if not user32.IsWindow(child) or not user32.IsWindow(parent):
             return False
         style = user32.GetWindowLongPtrW(child, GWL_STYLE)
+        # Strip all remaining top-level non-client styles.  WS_BORDER and
+        # WS_DLGFRAME are easy to miss and leave a persistent right/bottom
+        # gap after SetParent even when WS_CAPTION is already removed.
         style = (style & ~_REMOVE_STYLE) | WS_CHILD | WS_CLIPSIBLINGS
         user32.SetWindowLongPtrW(child, GWL_STYLE, style)
+        exstyle = user32.GetWindowLongPtrW(child, GWL_EXSTYLE)
+        user32.SetWindowLongPtrW(child, GWL_EXSTYLE, exstyle & ~_REMOVE_EXSTYLE)
         parent_style = user32.GetWindowLongPtrW(parent, GWL_STYLE)
         if not (parent_style & WS_CLIPCHILDREN):
             user32.SetWindowLongPtrW(parent, GWL_STYLE, parent_style | WS_CLIPCHILDREN)
