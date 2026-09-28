@@ -569,21 +569,27 @@ class HostView(QtWidgets.QWidget):
         self._embedded = False
         self._relaunch_count = 0
 
+        # The native placeholder is the entire HostView.  The loading
+        # label is an overlay so it can never reserve layout space.
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        self.status = QtWidgets.QLabel("正在启动内置浏览器……")
-        self.status.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.status.setStyleSheet("color:#8f96a3; padding:24px;")
-        layout.addWidget(self.status)
         self.placeholder = QtWidgets.QWidget()
         self.placeholder.setObjectName("SPAI_Browser_Host_Placeholder")
         self.placeholder.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
         self.placeholder.setAutoFillBackground(True)
-        self.placeholder.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         self.placeholder.setStyleSheet("background:#111214; border:0;")
         self.placeholder.setVisible(False)
+        self.placeholder.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
         layout.addWidget(self.placeholder, 1)
+
+        self.status = QtWidgets.QLabel("正在启动内置浏览器……", self)
+        self.status.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.status.setStyleSheet("color:#8f96a3; padding:24px;")
+        self.status.raise_()
 
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -714,11 +720,17 @@ class HostView(QtWidgets.QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        # Force exact native bounds; this avoids any layout rounding/margins
+        # between the Qt widget and the Win32 placeholder HWND.
+        self.placeholder.setGeometry(self.rect())
+        self.status.setGeometry(self.rect())
         if self._embedded and self._hwnd:
             host_embed.sync_geometry(self._hwnd, int(self.placeholder.winId()))
 
     def showEvent(self, event):
         super().showEvent(event)
+        self.placeholder.setGeometry(self.rect())
+        self.status.setGeometry(self.rect())
         if self._embedded and self._hwnd:
             host_embed.set_visible(self._hwnd, True)
             host_embed.sync_geometry(self._hwnd, int(self.placeholder.winId()))
