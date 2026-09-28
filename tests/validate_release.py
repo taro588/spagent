@@ -417,6 +417,10 @@ def test_browser_host_mode_real_chromium():
     # Cross-process embedding uses Win32 SetParent (pure ctypes).
     assert "SetParent" in embed and "WS_CHILD" in embed
     assert "sync_geometry" in embed and "set_visible" in embed
+    # 0.6.6: strip residual Win32 non-client frame styles that caused
+    # the persistent right/bottom gap after cross-process SetParent.
+    assert "WS_BORDER" in embed and "WS_DLGFRAME" in embed
+    assert "GWL_EXSTYLE" in embed and "WS_EX_CLIENTEDGE" in embed
     # 0.6.5: popups positioned via native ClientToScreen so they follow the
     # plugin window even after external SetParent embedding.
     host = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
@@ -428,6 +432,8 @@ def test_browser_host_mode_real_chromium():
     assert "SetProcessDpiAwarenessContext" in host or "SetProcessDpiAwareness" in host
     assert "_parent_is_placeholder" in browser and "_try_embed" in browser
     assert "def resync" in browser and "installEventFilter" in browser
+    assert "self.placeholder.setGeometry(self.rect())" in browser
+    assert "self.status.setGeometry(self.rect())" in browser
     assert "resync_host" in browser
     # 0.6.5: expanding the collapsed pane re-syncs the embedded window.
     assert "_resync_host" in assistant
