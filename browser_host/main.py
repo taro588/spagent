@@ -375,8 +375,18 @@ class DetachedWindow(QtWidgets.QMainWindow):
 
 
 class BrowserWindow(QtWidgets.QMainWindow):
-    def __init__(self, state_file: str, start_url: str = ""):
+    def __init__(self, state_file: str, start_url: str = "", embedded: bool = False):
         super().__init__()
+        self._embedded_mode = bool(embedded)
+        # Create the window frameless from the start when it will be
+        # reparented into Painter. Removing WS_CAPTION after QMainWindow
+        # creation can leave stale Qt frame/client metrics and create the
+        # exact right/bottom black bands seen in the dock.
+        if embedded:
+            self.setWindowFlags(
+                QtCore.Qt.WindowType.FramelessWindowHint |
+                QtCore.Qt.WindowType.Window
+            )
         self.setWindowTitle(APP_NAME)
         self.resize(460, 860)
         self._state_file = state_file
@@ -1961,6 +1971,7 @@ def main():
     _enable_windows_dpi_awareness()
     state_file = STATE_DEFAULT
     start_url = ""
+    embedded = "--embedded" in sys.argv[1:]
     args = sys.argv[1:]
     for i, arg in enumerate(args):
         if arg == "--state-file" and i + 1 < len(args):
@@ -1974,7 +1985,7 @@ def main():
     app.setApplicationName(APP_NAME)
 
     os.makedirs(os.path.dirname(state_file), exist_ok=True)
-    window = BrowserWindow(state_file, start_url)
+    window = BrowserWindow(state_file, start_url, embedded=embedded)
     window.show()
     sys.exit(app.exec())
 
