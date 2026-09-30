@@ -37,21 +37,47 @@ def test_every_provider_declares_capabilities_within_the_spec_keyset():
 
 
 def test_wired_capabilities_are_declared_for_every_provider():
-    """tool_calling / web_search 已接到全部协议路径，矩阵必须如实声明。"""
+    """tool_calling / web_search / image_search 已接到全部协议路径，矩阵必须如实声明。"""
     for name in PROVIDERS:
         caps = provider_capabilities(name)
         assert "tool_calling" in caps, "%s：painter_actions 已接线却没声明" % name
         assert "web_search" in caps, "%s：搜索（原生或兜底）已接线却没声明" % name
+        assert "image_search" in caps, (
+            "%s：图片搜索已接线（§6 MediaObject 管线，四条协议路径）却没声明" % name)
 
 
 def test_unwired_capabilities_are_never_declared():
-    """图片搜索 / 图像生成还没有任何 wire path —— 任何 provider 都不得声明。"""
+    """图像生成还没有任何 wire path —— 任何 provider 都不得声明。"""
     for name in PROVIDERS:
         caps = provider_capabilities(name)
-        assert "image_search" not in caps, (
-            "%s：图片搜索未接线（§6 MediaObject 管线）却声明了" % name)
         assert "image_generation" not in caps, (
             "%s：图像生成未接线（§8 PBR 云端）却声明了" % name)
+
+
+def test_image_search_wire_exists_on_every_protocol_path():
+    """image_search 全员声明的前提是四条协议路径都有真实接线。
+
+    证伪教训（2026-09-30）：剪断 Gemini 的 functionDeclaration 后
+    165 项测试全绿 —— 矩阵声明与 wire 之间没有任何锁。这条测试把
+    四条路径的工具清单逐个钉死：声明了 image_search，wire 就必须在。
+    """
+    from pathlib import Path
+    client = (Path(ROOT) / "plugin" / "core" / "ai_client.py").read_text(encoding="utf-8")
+    assert '"name": "image_search"' in client  # IMAGE_SEARCH_TOOL schema 本体
+    # OpenAI 兼容路径：function tools 清单
+    assert "tools = [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL, IMAGE_SEARCH_TOOL]" in client
+    # OpenAI Responses 路径：_function_tools() 必须声明 image_search
+    responses = client.split("def _openai_responses(")[1].split("def _openai_compatible(")[0]
+    assert '"name": "image_search"' in responses, "Responses 路径缺 image_search wire"
+    assert "function_call_output" in responses, "Responses 路径缺工具回执回传"
+    # Anthropic 路径：custom tool + tool_result 回传
+    anthropic = client.split("def _anthropic(")[1].split("def _gemini(")[0]
+    assert '"name": "image_search"' in anthropic, "Anthropic 路径缺 image_search wire"
+    assert '"type": "tool_result"' in anthropic, "Anthropic 路径缺工具回执回传"
+    # Gemini 路径：functionDeclarations + functionResponse 回传
+    gemini = client.split("def _gemini(")[1].split("def chat(")[0]
+    assert gemini.count('"name": "image_search"') >= 2, (
+        "Gemini 路径缺 image_search wire（声明或回执）")
 
 
 def test_vision_facts_match_the_message_conversion_wiring():

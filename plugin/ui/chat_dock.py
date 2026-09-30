@@ -32,7 +32,7 @@ SYSTEM_PROMPT = """你是 SP AI Assistant，运行在 Adobe Substance 3D Painter
 bake 只有在用户明确要求“烘焙/烘焙法线AO曲率”等，或明确要求依赖 Mesh Map 的效果并且确实需要重新烘焙时才设为 true；不能因为“创建材质”自动触发 bake_start。
 材质工作流可选项：material、channels、parameters、smart_mask、generator、filter、bake、export_path、export_preset。没有用户要求的选项保持为空/false。
 完成材质制作后，如用户明确要求输出贴图，再使用 export_textures。
-你可以在回复中附带参考图片：使用 Markdown 图片语法 ![标题](图片URL)。只使用联网搜索结果或用户提供的真实图片 URL，绝不要编造地址；插件会把图片渲染成卡片网格（缩略图 + 标题 + 来源）。用户询问材质/贴图参考、搜索结果展示等场景应尽量带图。
+你可以在回复中附带参考图片：使用 Markdown 图片语法 ![标题](图片地址)。需要找参考图时，优先调用 image_search 工具——它返回结构化结果，其中 local_path 是已缓存到本地的图片文件路径，把它填进 Markdown 即可（不要自己编造 URL 或路径）。用户提供的真实图片 URL 也可以直接使用。插件会把图片渲染成卡片网格（缩略图 + 标题 + 来源）。用户询问材质/贴图参考、搜索结果展示等场景应尽量带图，并在拿到图后基于图片内容给出分析（颜色、质感、磨损分布等），形成「搜索 → 图片显示 → 看图分析 → 材质意图」的完整回答。
 """
 # §17 权限模型：EXPORT / DANGEROUS 级别的工具在任何模式下都必须先确认。
 # 清单来自 Tool Registry（core.actions 再导出），不在这里维护第二份。
@@ -68,7 +68,7 @@ class ChatDock(QtWidgets.QWidget):
 
     # True when the user activates the 浏览器 tab (show the side browser pane).
     browser_tab_changed = QtCore.Signal(bool)
-    def __init__(self, version_text="0.7.1"):
+    def __init__(self, version_text="0.7.2"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
@@ -835,12 +835,18 @@ class ChatDock(QtWidgets.QWidget):
     @staticmethod
     def _extract_images(message):
         """Pull images out of a message: markdown ![alt](url) (with alt text),
-        plus image_url/image/url JSON-style keys. Returns [{url, alt}]."""
+        plus image_url/image/url JSON-style keys. Returns [{url, alt}].
+
+        规格 §6：image_search 结果的 local_path 是本地缓存文件，模型会把它
+        写成 Markdown 图片 —— 这里同样认（绝对路径或 file://），渲染不依赖
+        临时远程 URL。"""
         text = str(message or "")
         found = []
-        for match in re.finditer(r"!\[([^\]]*)\]\((https?://[^)\s]+|data:image/[^)\s]+)\)", text):
+        pattern = (r"!\[([^\]]*)\]\((https?://[^)\s]+|data:image/[^)\s]+"
+                   r"|[A-Za-z]:[/\\][^)\s]+|file:/[/\\][^)\s]+)\)")
+        for match in re.finditer(pattern, text):
             found.append({"url": match.group(2).strip(), "alt": match.group(1).strip()})
-        for match in re.finditer(r'(?:image_url|image|url)\s*[:=]\s*["\\\'](https?://[^"\\\']+|data:image/[^"\\\']+)', text):
+        for match in re.finditer(r'(?:image_url|image|url|local_path)\s*[:=]\s*["\'](https?://[^"\']+|data:image/[^"\']+|[A-Za-z]:[/\\][^"\']+|file:/[/\\][^"\']+)', text):
             found.append({"url": match.group(1).strip(), "alt": ""})
         deduped = []
         seen = set()
@@ -879,17 +885,26 @@ class ChatDock(QtWidgets.QWidget):
         })
         if is_ai:
             self._last_meta = {}
-            # decode inline data-URL images right away; fetch remote thumbnails
+            # decode inline data-URL images right away; fetch remote thumbnails;
+            # load local cached files directly (规格 §6：不依赖临时远程 URL)
             for img in normalized:
-                if img["url"].startswith("data:image/"):
+                url = img["url"]
+                if url.startswith("data:image/"):
                     image = QtGui.QImage()
                     try:
-                        image.loadFromData(base64.b64decode(img["url"].split(",", 1)[1]))
-                        self._thumb_cache[img["url"]] = image
+                        image.loadFromData(base64.b64decode(url.split(",", 1)[1]))
+                        self._thumb_cache[url] = image
                     except Exception:
-                        self._thumb_cache[img["url"]] = "fail"
-                elif img["url"].startswith("http"):
-                    self._ensure_thumbs([img["url"]])
+                        self._thumb_cache[url] = "fail"
+                elif url.startswith("http"):
+                    self._ensure_thumbs([url])
+                elif url.startswith("file:"):
+                    path = QtCore.QUrl(url).toLocalFile()
+                    image = QtGui.QImage(path)
+                    self._thumb_cache[url] = image if not image.isNull() else "fail"
+                elif re.match(r"^[A-Za-z]:[/\\]", url):
+                    image = QtGui.QImage(url.replace("\\", "/"))
+                    self._thumb_cache[url] = image if not image.isNull() else "fail"
         self._rerender_history()
 
     def _on_anchor(self, url):
@@ -1014,11 +1029,19 @@ class ChatDock(QtWidgets.QWidget):
                     '<span style="color:#5a6070;">图片</span></td></tr></table>'
                 )
             title = (img.get("alt") or "查看图片").strip()[:24]
+            url = img["url"]
+            if url.startswith(("http://", "https://")):
+                source = self._host_of(url)
+            elif url.startswith("file:") or re.match(r"^[A-Za-z]:[/\\]", url):
+                # 规格 §6.1：本地工作缓存落地后的展示形态
+                source = "本地缓存"
+            else:
+                source = ""
             cells.append(
                 '<td width="33%" bgcolor="#16181d" style="padding:6px;">'
                 + picture
                 + f'<div style="color:#e8eaed; margin-top:3px;">{html.escape(title)}</div>'
-                + f'<div style="color:#6d7480;">{html.escape(self._host_of(url))}</div>'
+                + f'<div style="color:#6d7480;">{html.escape(source)}</div>'
                 + '</td>'
             )
         rows = []
@@ -1567,5 +1590,5 @@ class ChatDock(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, callback))
 
 
-def build_chat_dock(version_text="0.7.1"):
+def build_chat_dock(version_text="0.7.2"):
     return ChatDock(version_text)

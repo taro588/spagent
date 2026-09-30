@@ -44,7 +44,7 @@ PROVIDERS = {
         "id": "openai",
         "base_url": "https://api.openai.com/v1",
         "models": ["gpt-5.6"],
-        "capabilities": {"vision", "web_search", "tool_calling"},
+        "capabilities": {"vision", "web_search", "image_search", "tool_calling"},
         # 模型级覆盖：key 是模型名小写的子串，值为增量（add/remove）。
         "model_capabilities": {},
     },
@@ -52,14 +52,14 @@ PROVIDERS = {
         "id": "anthropic",
         "base_url": "https://api.anthropic.com",
         "models": ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
-        "capabilities": {"vision", "web_search", "tool_calling"},
+        "capabilities": {"vision", "web_search", "image_search", "tool_calling"},
         "model_capabilities": {},
     },
     "Google Gemini": {
         "id": "gemini",
         "base_url": "https://generativelanguage.googleapis.com",
         "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
-        "capabilities": {"vision", "web_search", "tool_calling"},
+        "capabilities": {"vision", "web_search", "image_search", "tool_calling"},
         "model_capabilities": {},
     },
     "DeepSeek": {
@@ -67,7 +67,7 @@ PROVIDERS = {
         "base_url": "https://api.deepseek.com",
         "models": ["deepseek-chat", "deepseek-reasoner"],
         # 官方 chat/reasoner 均为纯文本模型；web_search 走 Bing 兜底函数。
-        "capabilities": {"web_search", "tool_calling"},
+        "capabilities": {"web_search", "image_search", "tool_calling"},
         "model_capabilities": {},
     },
     "Kimi": {
@@ -75,7 +75,7 @@ PROVIDERS = {
         "base_url": "https://api.moonshot.cn/v1",
         "models": ["kimi-k2.5", "kimi-k2"],
         # kimi-k2 系列为纯文本；moonshot 的视觉模型在 vl 线上（kimi-latest 等）。
-        "capabilities": {"web_search", "tool_calling"},
+        "capabilities": {"web_search", "image_search", "tool_calling"},
         "model_capabilities": {"vl": {"add": ["vision"]}},
     },
     "Qwen": {
@@ -83,7 +83,7 @@ PROVIDERS = {
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "models": ["qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus"],
         # qwen3.x chat 系列为纯文本；换入 qwen-vl-* 视觉模型时按子串匹配放开。
-        "capabilities": {"web_search", "tool_calling"},
+        "capabilities": {"web_search", "image_search", "tool_calling"},
         "model_capabilities": {"vl": {"add": ["vision"]}},
     },
     "GLM": {
@@ -91,7 +91,7 @@ PROVIDERS = {
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "models": ["glm-5-turbo", "glm-5"],
         # glm-5 系列为纯文本；GLM 的视觉模型在 glm-4v 线上。
-        "capabilities": {"web_search", "tool_calling"},
+        "capabilities": {"web_search", "image_search", "tool_calling"},
         "model_capabilities": {"4v": {"add": ["vision"]}},
     },
     "MiniMax": {
@@ -99,7 +99,7 @@ PROVIDERS = {
         "base_url": "https://api.minimax.io/v1",
         "models": ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3"],
         # M 系列为纯文本；MiniMax 的视觉模型走 vision 线（MiniMax-VL 等）。
-        "capabilities": {"web_search", "tool_calling"},
+        "capabilities": {"web_search", "image_search", "tool_calling"},
         "model_capabilities": {"vl": {"add": ["vision"]}},
     },
     "OpenAI Compatible": {
@@ -108,7 +108,7 @@ PROVIDERS = {
         "models": ["custom"],
         # 本地服务的 wire path 支持图片（image_url content）；能否真用取决于
         # 用户本地装的是什么模型 —— 这由用户自己判断，插件不做阻断。
-        "capabilities": {"vision", "web_search", "tool_calling"},
+        "capabilities": {"vision", "web_search", "image_search", "tool_calling"},
         "model_capabilities": {},
     },
 }
@@ -177,6 +177,43 @@ WEB_SEARCH_TOOL = {
 # 模型可见的工具 schema 由 Tool Registry 生成（架构文档 §12：
 # 再手写一份 enum 就是 bug —— 见 §25「AI 调用工具与执行白名单不一致」）。
 PAINTER_ACTION_TOOL = painter_action_tool()
+
+# 图片搜索工具（规格 §6）：执行端是 core.media 的 MediaObject 管线
+# （结构化结果 + 本地缓存 + 失败可重试），不是 Painter 操作，不进 Registry。
+IMAGE_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "image_search",
+        "description": (
+            "搜索参考图片并返回结构化结果（标题/来源/尺寸/本地缓存路径）。"
+            "适用场景：用户要材质参考、风格参考、贴图灵感、看图分析。"
+            "结果里的 local_path 是已缓存到本地的图片文件，可直接在回复中"
+            "用 Markdown 图片语法 ![标题](local_path) 展示给用户。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "图片搜索关键词，如「旧铜材质 腐蚀 特写」"},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 12}
+            },
+            "required": ["query"],
+            "additionalProperties": False
+        }
+    }
+}
+
+
+def _run_image_search(args: dict) -> dict:
+    """执行 image_search 工具调用并返回回执 dict（规格 §6 管线入口）。"""
+    from core import media as _media
+    query = (args or {}).get("query")
+    max_results = (args or {}).get("max_results", 8)
+    if not str(query or "").strip():
+        return {"query": "", "error": "image_search 的 query 不能为空", "results": []}
+    try:
+        return _media.search_images_cached(str(query), int(max_results or 8))
+    except Exception as exc:  # 兜底：回执里给模型可读的错误而不是中断会话
+        return {"query": str(query), "error": str(exc), "results": []}
 
 
 class AIError(RuntimeError):
@@ -375,44 +412,74 @@ def _gemini_parts(content):
     return parts
 
 def _openai_responses(messages, model, api_key, base_url):
-    response_tool = {
-        "type": "function",
-        "name": "painter_actions",
-        "description": PAINTER_ACTION_TOOL["function"]["description"],
-        "parameters": PAINTER_ACTION_TOOL["function"]["parameters"],
-        "strict": False,
-    }
-    payload = {
-        "model": model,
-        "input": [
+    def _function_tools():
+        return [
             {
-                "role": m.get("role"),
-                "content": _openai_message_content(m.get("content"), response_api=True),
-            }
-            for m in messages
-        ],
-        "tools": [response_tool, {"type": "web_search"}],
-        "tool_choice": "auto",
-    }
-    data = _post(
-        base_url.rstrip("/") + "/responses",
-        payload,
-        {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
-    )
-    _record_usage(data)
+                "type": "function",
+                "name": "painter_actions",
+                "description": PAINTER_ACTION_TOOL["function"]["description"],
+                "parameters": PAINTER_ACTION_TOOL["function"]["parameters"],
+                "strict": False,
+            },
+            {
+                "type": "function",
+                "name": "image_search",
+                "description": IMAGE_SEARCH_TOOL["function"]["description"],
+                "parameters": IMAGE_SEARCH_TOOL["function"]["parameters"],
+                "strict": False,
+            },
+        ]
 
-    # Responses API returns a function_call item when the model decides to
-    # operate Painter. The plugin executes that allow-listed plan locally
-    # through Adobe's official Painter Python API.
-    for item in data.get("output", []) or []:
-        if item.get("type") == "function_call" and item.get("name") == "painter_actions":
-            arguments = item.get("arguments") or "{}"
+    input_items = [
+        {
+            "role": m.get("role"),
+            "content": _openai_message_content(m.get("content"), response_api=True),
+        }
+        for m in messages
+    ]
+    # 最多 3 轮：image_search 的回执要回传给模型继续生成（规格 §6.2
+    # 「视觉模型收到图片后再进行分析」）；painter_actions 仍然终止返回。
+    for _round in range(3):
+        payload = {
+            "model": model,
+            "input": input_items,
+            "tools": _function_tools() + [{"type": "web_search"}],
+            "tool_choice": "auto",
+        }
+        data = _post(
+            base_url.rstrip("/") + "/responses",
+            payload,
+            {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+        )
+        _record_usage(data)
+        image_call = None
+        for item in data.get("output", []) or []:
+            if item.get("type") == "function_call" and item.get("name") == "painter_actions":
+                arguments = item.get("arguments") or "{}"
+                try:
+                    plan = json.loads(arguments)
+                except json.JSONDecodeError as exc:
+                    raise AIError("OpenAI 返回的 Painter 工具参数不是有效 JSON") from exc
+                if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
+                    return json.dumps(plan, ensure_ascii=False)
+            if item.get("type") == "function_call" and item.get("name") == "image_search":
+                image_call = item
+        if image_call is not None:
             try:
-                plan = json.loads(arguments)
-            except json.JSONDecodeError as exc:
-                raise AIError("OpenAI 返回的 Painter 工具参数不是有效 JSON") from exc
-            if isinstance(plan, dict) and isinstance(plan.get("actions"), list):
-                return json.dumps(plan, ensure_ascii=False)
+                args = json.loads(image_call.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            result = _run_image_search(args)
+            input_items = input_items + [
+                image_call,
+                {
+                    "type": "function_call_output",
+                    "call_id": image_call.get("call_id") or image_call.get("id"),
+                    "output": json.dumps(result, ensure_ascii=False),
+                },
+            ]
+            continue
+        break
 
     text = _extract_openai_responses_text(data)
     if not text:
@@ -422,7 +489,7 @@ def _openai_responses(messages, model, api_key, base_url):
 
 def _openai_compatible(messages, model, api_key, base_url):
     normalized_messages = [{"role": m.get("role"), "content": _openai_message_content(m.get("content"))} for m in messages]
-    tools = [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL]
+    tools = [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL, IMAGE_SEARCH_TOOL]
     for _round in range(6):
         payload = {"model": model, "messages": normalized_messages, "tools": tools, "tool_choice": "auto"}
         headers = {"Content-Type": "application/json"}
@@ -451,6 +518,10 @@ def _openai_compatible(messages, model, api_key, base_url):
                 try: result = _web_search(args.get("query"), args.get("max_results", 5))
                 except Exception as exc: result = {"error": str(exc)}
                 normalized_messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": json.dumps(result, ensure_ascii=False)})
+            elif name == "image_search":
+                # 规格 §6：图片搜索走 MediaObject 管线，回执带本地缓存路径
+                result = _run_image_search(args)
+                normalized_messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": json.dumps(result, ensure_ascii=False)})
         if painter_call is not None:
             return json.dumps(painter_call, ensure_ascii=False)
     raise AIError("工具调用超过最大连续轮次，请重新尝试。")
@@ -463,44 +534,80 @@ def _anthropic(messages, model, api_key, base_url):
             system_parts.append(message.get("content") or "")
         else:
             user_messages.append(message)
-    payload = {
-        "model": model,
-        "max_tokens": 4096,
-        "messages": [{"role": m.get("role"), "content": _anthropic_content(m.get("content"))} for m in user_messages],
-        "tools": [
-            {
-                # Custom tool keeps the full official function-calling surface so
-                # Claude can still drive Painter exactly like the OpenAI path.
-                "type": "custom",
-                "name": "painter_actions",
-                "description": PAINTER_ACTION_TOOL["function"]["description"],
-                "input_schema": PAINTER_ACTION_TOOL["function"]["parameters"],
-            },
-            {"type": "web_search_20250305", "name": "web_search", "max_uses": 5},
-        ],
-    }
-    if system_parts:
-        payload["system"] = "\n".join(system_parts).strip()
-    data = _post(
-        base_url.rstrip("/") + "/v1/messages",
-        payload,
+    tools = [
         {
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
+            # Custom tool keeps the full official function-calling surface so
+            # Claude can still drive Painter exactly like the OpenAI path.
+            "type": "custom",
+            "name": "painter_actions",
+            "description": PAINTER_ACTION_TOOL["function"]["description"],
+            "input_schema": PAINTER_ACTION_TOOL["function"]["parameters"],
         },
-    )
-    _record_usage(data)
-    for block in data.get("content", []) or []:
-        if (
-            isinstance(block, dict)
-            and block.get("type") == "tool_use"
-            and block.get("name") == "painter_actions"
-            and isinstance(block.get("input"), dict)
-        ):
-            # Claude decided to operate Painter: return the allow-listed plan
-            # so the plugin can validate and execute it via the official API.
-            return json.dumps(block["input"], ensure_ascii=False)
+        {
+            "type": "custom",
+            "name": "image_search",
+            "description": IMAGE_SEARCH_TOOL["function"]["description"],
+            "input_schema": IMAGE_SEARCH_TOOL["function"]["parameters"],
+        },
+        {"type": "web_search_20250305", "name": "web_search", "max_uses": 5},
+    ]
+    payload_messages = [{"role": m.get("role"), "content": _anthropic_content(m.get("content"))} for m in user_messages]
+    # 最多 3 轮：image_search 的回执要回传给模型继续分析（规格 §6.2）；
+    # painter_actions 仍然终止返回。
+    for _round in range(3):
+        payload = {
+            "model": model,
+            "max_tokens": 4096,
+            "messages": payload_messages,
+            "tools": tools,
+        }
+        if system_parts:
+            payload["system"] = "\n".join(system_parts).strip()
+        data = _post(
+            base_url.rstrip("/") + "/v1/messages",
+            payload,
+            {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+        )
+        _record_usage(data)
+        blocks = data.get("content", []) or []
+        painter_plan = None
+        image_uses = [
+            block for block in blocks
+            if isinstance(block, dict) and block.get("type") == "tool_use"
+            and block.get("name") == "image_search"
+        ]
+        for block in blocks:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and block.get("name") == "painter_actions"
+                and isinstance(block.get("input"), dict)
+            ):
+                # Claude decided to operate Painter: return the allow-listed plan
+                # so the plugin can validate and execute it via the official API.
+                painter_plan = json.dumps(block["input"], ensure_ascii=False)
+                break
+        if painter_plan is not None:
+            return painter_plan
+        if image_uses:
+            tool_results = []
+            for block in image_uses:
+                result = _run_image_search(block.get("input") or {})
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.get("id"),
+                    "content": json.dumps(result, ensure_ascii=False),
+                })
+            payload_messages = payload_messages + [
+                {"role": "assistant", "content": blocks},
+                {"role": "user", "content": tool_results},
+            ]
+            continue
+        break
     text = "\n".join(
         block.get("text", "")
         for block in data.get("content", [])
@@ -524,47 +631,76 @@ def _gemini(messages, model, api_key, base_url):
                 "role": "model" if role == "assistant" else "user",
                 "parts": _gemini_parts(content),
             })
-    payload = {
-        "contents": contents,
-        # google_search keeps the model's native web capability; the function
-        # declaration lets Gemini drive Painter through the same plan pipeline.
-        "tools": [
-            {"google_search": {}},
-            {
-                "functionDeclarations": [
+    # 最多 3 轮：image_search 的回执以 functionResponse 回传（规格 §6.2）；
+    # painter_actions 仍然终止返回。
+    data = None
+    for _round in range(3):
+        payload = {
+            "contents": contents,
+            # google_search keeps the model's native web capability; the function
+            # declarations let Gemini drive Painter through the same plan pipeline.
+            "tools": [
+                {"google_search": {}},
+                {
+                    "functionDeclarations": [
+                        {
+                            "name": "painter_actions",
+                            "description": PAINTER_ACTION_TOOL["function"]["description"],
+                            "parameters": PAINTER_ACTION_TOOL["function"]["parameters"],
+                        },
+                        {
+                            "name": "image_search",
+                            "description": IMAGE_SEARCH_TOOL["function"]["description"],
+                            "parameters": IMAGE_SEARCH_TOOL["function"]["parameters"],
+                        },
+                    ]
+                },
+            ],
+        }
+        if system_parts:
+            payload["systemInstruction"] = {"parts": [{"text": "\n".join(system_parts)}]}
+        data = _post(
+            base_url.rstrip("/") + f"/v1beta/models/{model}:generateContent",
+            payload,
+            {"x-goog-api-key": api_key, "Content-Type": "application/json"},
+        )
+        _record_usage(data)
+        candidates = data.get("candidates") or []
+        if not candidates:
+            raise AIError("Gemini 返回成功，但没有候选输出")
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        painter_plan = None
+        image_calls = []
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            call = part.get("functionCall")
+            if not isinstance(call, dict):
+                continue
+            if call.get("name") == "painter_actions" and isinstance(call.get("args"), dict):
+                # Gemini decided to operate Painter: return the allow-listed plan
+                # for local validation and execution via the official API.
+                painter_plan = json.dumps(call["args"], ensure_ascii=False)
+                break
+            if call.get("name") == "image_search":
+                image_calls.append(call)
+        if painter_plan is not None:
+            return painter_plan
+        if image_calls:
+            contents = contents + [
+                {"role": "model", "parts": [{"functionCall": call} for call in image_calls]},
+                {"role": "user", "parts": [
                     {
-                        "name": "painter_actions",
-                        "description": PAINTER_ACTION_TOOL["function"]["description"],
-                        "parameters": PAINTER_ACTION_TOOL["function"]["parameters"],
+                        "functionResponse": {
+                            "name": "image_search",
+                            "response": _run_image_search(call.get("args") or {}),
+                        }
                     }
-                ]
-            },
-        ],
-    }
-    if system_parts:
-        payload["systemInstruction"] = {"parts": [{"text": "\n".join(system_parts)}]}
-    data = _post(
-        base_url.rstrip("/") + f"/v1beta/models/{model}:generateContent",
-        payload,
-        {"x-goog-api-key": api_key, "Content-Type": "application/json"},
-    )
-    _record_usage(data)
-    candidates = data.get("candidates") or []
-    if not candidates:
-        raise AIError("Gemini 返回成功，但没有候选输出")
-    parts = (candidates[0].get("content") or {}).get("parts") or []
-    for part in parts:
-        if not isinstance(part, dict):
+                    for call in image_calls
+                ]},
+            ]
             continue
-        call = part.get("functionCall")
-        if (
-            isinstance(call, dict)
-            and call.get("name") == "painter_actions"
-            and isinstance(call.get("args"), dict)
-        ):
-            # Gemini decided to operate Painter: return the allow-listed plan
-            # for local validation and execution via the official API.
-            return json.dumps(call["args"], ensure_ascii=False)
+        break
     text = "\n".join(
         str(p.get("text", "")) for p in parts
         if isinstance(p, dict) and p.get("text")

@@ -12,7 +12,7 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.7.1"
+    assert data["version"] == "0.7.2"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["max_tested_painter_version"] == "11.0.x"
@@ -32,13 +32,13 @@ def test_release_versions_are_synchronized():
     assert f'#define MyAppVersion "{version}"' in iss
     assert f"name: SP-AI-Assistant-Setup-{version}" in workflow
     assert f"SP_AI_Assistant_Setup_{{#MyAppVersion}}" in iss
-    assert "SP_AI_Assistant_Setup_0.7.1.sha256" in workflow
+    assert "SP_AI_Assistant_Setup_0.7.2.sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
 
 
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.7.1"' in iss
+    assert '#define MyAppVersion "0.7.2"' in iss
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
     assert 'Source: "..\\plugin\\core\\*"' in iss
@@ -294,10 +294,13 @@ def test_agent_tool_calling_and_permissions():
     assert "painter_actions" in client
     assert "WEB_SEARCH_TOOL" in client
     assert "def web_search(" in client
-    assert '"tools": [response_tool, {"type": "web_search"}]' in client
     assert '"type": "web_search_20250305"' in client
     assert '"google_search": {}' in client
-    assert "tools = [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL]" in client
+    assert "tools = [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL, IMAGE_SEARCH_TOOL]" in client
+    # 0.7.2（规格 §6）：image_search 在四条协议路径都有 wire path
+    assert "IMAGE_SEARCH_TOOL" in client
+    assert "def _run_image_search(" in client
+    assert '"name": "image_search"' in client
     assert "tool_calls" in client
     assert "permission_mode" in chat
     assert "allow_high_impact" in chat
@@ -481,8 +484,8 @@ def test_browser_host_app_and_ci_packaging():
 
 def test_all_providers_keep_full_model_capabilities():
     client = (ROOT / "plugin" / "core" / "ai_client.py").read_text(encoding="utf-8")
-    # OpenAI Responses: native web_search + painter tool
-    assert '"tools": [response_tool, {"type": "web_search"}]' in client
+    # OpenAI Responses: native web_search + painter/image_search function tools
+    assert 'tools": _function_tools() + [{"type": "web_search"}]' in client
     # Anthropic: painter custom tool + official web_search
     assert '"type": "custom"' in client
     assert '"input_schema"' in client
@@ -492,8 +495,8 @@ def test_all_providers_keep_full_model_capabilities():
     assert '{"google_search": {}}' in client
     assert '"functionDeclarations"' in client
     assert "functionCall" in client
-    # OpenAI-compatible providers keep the function-tool pair
-    assert "tools = [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL]" in client
+    # OpenAI-compatible providers keep the function-tool set（§6 加 image_search）
+    assert "tools = [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL, IMAGE_SEARCH_TOOL]" in client
 
 
 def test_chat_ai_replies_support_images_and_collapsible_sections():
@@ -511,8 +514,9 @@ def test_chat_ai_replies_support_images_and_collapsible_sections():
     assert "show_all_images" in chat
     # status lines (正在……) render in the blue accent style
     assert "✦" in chat
-    # the model is told how to attach reference images
-    assert "![标题](图片URL)" in chat
+    # the model is told how to attach reference images（0.7.2：优先 image_search 的本地缓存路径）
+    assert "![标题](图片地址)" in chat
+    assert "image_search" in chat
 
 
 def test_browser_host_no_black_edges():

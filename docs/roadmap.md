@@ -107,6 +107,13 @@ AttributeError。对照本机官方声明文件（Python API 0.3.4 / Painter 11.
    vision）。事实由 `tests/test_ai_capabilities.py`（8 项）锁定并证伪过。
 3. **MediaObject 与搜索管线（§6）**：搜索结果结构化 + 本地缓存 + 来源许可，
    图片进入 Vision。
+   ✅ **已完成（0.7.2）**：`core/media.py` MediaObject（十二个规格键 +
+   local_path/error 扩展）、`image_search` 工具接入全部九个 provider 的
+   四条协议路径（回执带本地缓存路径）、图片缓存到
+   `%LOCALAPPDATA%\SP AI Assistant\media_cache`（原子落盘、失败可重试）、
+   Chat UI 卡片吃本地路径（「搜索 → 图片显示 → 看图分析 → 材质意图」）。
+   能力矩阵 image_search 全员声明，并新增 wire 锁测试钉死「声明必须有
+   接线」（来自真实证伪：此前矩阵与接线之间无锁）。
 4. **PBR 生成与质量门（§8 / §9）+ Asset Registry（§10）**。
 5. **Transaction / Rollback 与 Task State Machine（§16 / §19）**：
    目前有 `ScopedModification`（缺失时显式降级），但没有 checkpoint 与回滚。
