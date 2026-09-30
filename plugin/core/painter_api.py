@@ -30,6 +30,11 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple
 PAINTER_MIN_VERSION: Tuple[int, int, int] = (7, 2, 0)
 # 本文件里零散接口的探测结果确认于该官方 Python API 版本（Painter 11.0.0）。
 VERIFIED_AGAINST = "0.3.4"
+# 2026-09-30 真机集成冒烟（Painter 11.0.0.4202）实际**执行**过对应官方入口的
+# 能力 —— 不只是 hasattr 探测。证据 = integration_smoke/latest.json 里的
+# 执行回执（api / applied）与确定性调用链。每个版本跑完冒烟后把新执行过的
+# 能力补进来，让「哪些能力在哪个版本真的能用」越跑越准（roadmap 下一步 6）。
+EXECUTED_AGAINST = "0.3.4"
 
 
 class AdapterError(RuntimeError):
@@ -62,7 +67,11 @@ class Capability:
     """一条官方 API 能力声明。
 
     probe: 运行时探测路径（`substance_painter.` 之后的部分），用 hasattr 走。
-    verified_on: 我们实测确认存在的官方 API 版本；None 表示尚未实测。
+    verified_on: 真机上探测确认存在的官方 API 版本；None 表示尚未实测。
+    executed_on: 真机上**真实执行过**（完整调用成功）的官方 API 版本；
+        None 表示只探测过、还没在真实计划里跑过。两者必须分开记：
+        「符号存在」和「签名契约真的对」是两件事（Color 契约缺陷就是探测
+        全绿、一执行才炸的反例）。
     min_painter: 已知的最低 Painter 版本；None 表示未确认，不做版本硬判定。
     """
 
@@ -71,43 +80,54 @@ class Capability:
     note: str
     min_painter: Optional[Tuple[int, int, int]] = None
     verified_on: Optional[str] = None
+    executed_on: Optional[str] = None
 
 
 CAPABILITIES: Tuple[Capability, ...] = (
     Capability("application.version", "application.version_info",
-               "读取 Painter 版本", verified_on=VERIFIED_AGAINST),
+               "读取 Painter 版本", verified_on=VERIFIED_AGAINST,
+               executed_on=EXECUTED_AGAINST),
     Capability("application.suspend_engine", "application.disable_engine_computations",
                "临时关闭引擎计算，批量提交时减少重复计算", verified_on=VERIFIED_AGAINST),
     Capability("layerstack.scoped_modification", "layerstack.ScopedModification",
-               "§16 批量修改合并为一次提交", verified_on=VERIFIED_AGAINST),
+               "§16 批量修改合并为一次提交", verified_on=VERIFIED_AGAINST,
+               executed_on=EXECUTED_AGAINST),
     Capability("layerstack.insert_fill", "layerstack.insert_fill",
-               "创建 Fill Layer", verified_on=VERIFIED_AGAINST),
+               "创建 Fill Layer", verified_on=VERIFIED_AGAINST,
+               executed_on=EXECUTED_AGAINST),
     Capability("layerstack.insert_paint", "layerstack.insert_paint",
                "创建 Paint Layer", verified_on=VERIFIED_AGAINST),
     Capability("layerstack.insert_group", "layerstack.insert_group",
-               "创建 Group", verified_on=VERIFIED_AGAINST),
+               "创建 Group", verified_on=VERIFIED_AGAINST,
+               executed_on=EXECUTED_AGAINST),
     Capability("layerstack.insert_position", "layerstack.InsertPosition.from_textureset_stack",
-               "按 Texture Set 栈定位插入点", verified_on=VERIFIED_AGAINST),
+               "按 Texture Set 栈定位插入点", verified_on=VERIFIED_AGAINST,
+               executed_on=EXECUTED_AGAINST),
     Capability("layerstack.uid_lookup", "layerstack.get_node_by_uid",
                "§15 用 UID 定位图层（不依赖图层名）", verified_on=VERIFIED_AGAINST),
     Capability("layerstack.selection", "layerstack.set_selected_nodes",
-               "设置选中节点", verified_on=VERIFIED_AGAINST),
+               "设置选中节点", verified_on=VERIFIED_AGAINST,
+               executed_on=EXECUTED_AGAINST),
     Capability("source.set_source", "layerstack.FillLayerNode.set_source",
-               "写入通道来源（颜色/资源/锚点）", verified_on=VERIFIED_AGAINST),
+               "写入通道来源（颜色/资源/锚点）", verified_on=VERIFIED_AGAINST,
+               executed_on=EXECUTED_AGAINST),
     Capability("source.material_source", "layerstack.FillLayerNode.set_material_source",
                "§14 多通道 Material 模式", verified_on=VERIFIED_AGAINST),
     Capability("source.uniform_color", "source.SourceUniformColor",
-               "通道写入纯色", verified_on=VERIFIED_AGAINST),
+               "通道写入纯色", verified_on=VERIFIED_AGAINST,
+               executed_on=EXECUTED_AGAINST),
     Capability("source.bitmap", "source.SourceBitmap",
                "通道写入位图资源", verified_on=VERIFIED_AGAINST),
     Capability("layerstack.geometry_mask_type", "layerstack.LayerNode.set_geometry_mask_type",
-               "几何遮罩类型", verified_on=VERIFIED_AGAINST),
+               "几何遮罩类型", verified_on=VERIFIED_AGAINST,
+               executed_on=EXECUTED_AGAINST),
     Capability("layerstack.geometry_mask_meshes", "layerstack.LayerNode.set_geometry_mask_enabled_meshes",
                "几何遮罩按网格启用", verified_on=VERIFIED_AGAINST),
     Capability("layerstack.geometry_mask_uv_tiles", "layerstack.LayerNode.set_geometry_mask_enabled_uv_tiles",
                "几何遮罩按 UV Tile 启用（需 UV Tile 工作流）", verified_on=VERIFIED_AGAINST),
     Capability("layerstack.smart_material_create", "layerstack.create_smart_material",
-               "把 Group 存为工程内 Smart Material 资源", verified_on=VERIFIED_AGAINST),
+               "把 Group 存为工程内 Smart Material 资源", verified_on=VERIFIED_AGAINST,
+               executed_on=EXECUTED_AGAINST),
     Capability("layerstack.smart_mask_create", "layerstack.create_smart_mask",
                "把图层存为工程内 Smart Mask 资源", verified_on=VERIFIED_AGAINST),
     Capability("layerstack.smart_material_insert", "layerstack.insert_smart_material",
@@ -115,7 +135,8 @@ CAPABILITIES: Tuple[Capability, ...] = (
     Capability("layerstack.smart_mask_insert", "layerstack.insert_smart_mask",
                "插入 Smart Mask", verified_on=VERIFIED_AGAINST),
     Capability("textureset.active_stack", "textureset.get_active_stack",
-               "读取当前 Texture Set 栈", verified_on=VERIFIED_AGAINST),
+               "读取当前 Texture Set 栈", verified_on=VERIFIED_AGAINST,
+               executed_on=EXECUTED_AGAINST),
     Capability("textureset.resolution", "textureset.TextureSet.set_resolution",
                "设置 Texture Set 分辨率", verified_on=VERIFIED_AGAINST),
     Capability("textureset.channel_add", "textureset.Stack.add_channel",
@@ -145,7 +166,8 @@ CAPABILITIES: Tuple[Capability, ...] = (
     Capability("display.tone_mapping", "display.set_tone_mapping",
                "设置色调映射", verified_on=VERIFIED_AGAINST),
     Capability("colormanagement.color", "colormanagement.Color",
-               "构造颜色对象", verified_on=VERIFIED_AGAINST),
+               "构造颜色对象", verified_on=VERIFIED_AGAINST,
+               executed_on=EXECUTED_AGAINST),
 )
 
 CAPABILITY_BY_NAME = {cap.name: cap for cap in CAPABILITIES}
@@ -272,6 +294,7 @@ class PainterAPI:
                 "supported": self.supports(cap.name),
                 "probe": cap.probe,
                 "verified_on": cap.verified_on,
+                "executed_on": cap.executed_on,
                 "note": cap.note,
             }
         return report

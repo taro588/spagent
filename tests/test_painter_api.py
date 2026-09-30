@@ -332,3 +332,54 @@ def test_capabilities_are_unique_and_have_notes():
     assert len(names) == len(set(names))
     assert all(cap.note for cap in CAPABILITIES)
     assert all(cap.verified_on for cap in CAPABILITIES)
+
+
+# --------------------------------------------------------------- executed_on
+# verified_on = 真机上探测到符号存在；executed_on = 真机上完整执行成功。
+# 两者必须分开（Color 契约缺陷就是「探测全绿、一执行才炸」的反例），
+# 所以这里把 2026-09-30 真机冒烟的执行证据锁死，防止以后随手加错。
+
+_SMOKE_2026_09_30_EXECUTED = {
+    # environment.painter_version 读取自 runtime_info()
+    "application.version",
+    # 两批计划的 scope_degraded=false
+    "layerstack.scoped_modification",
+    # 核心批次执行回执（api / applied）及其确定性调用链
+    "layerstack.insert_fill",
+    "layerstack.insert_position",
+    "textureset.active_stack",
+    "source.set_source",
+    "source.uniform_color",
+    "colormanagement.color",
+    "layerstack.geometry_mask_type",
+    # 进阶批次执行回执
+    "layerstack.insert_group",
+    "layerstack.smart_material_create",
+    "layerstack.selection",
+}
+
+
+def test_executed_on_implies_verified_on():
+    for cap in CAPABILITIES:
+        if cap.executed_on:
+            assert cap.verified_on, (
+                "%s 标了 executed_on 却没有 verified_on：执行过必然探测过" % cap.name)
+
+
+def test_executed_set_is_exactly_the_real_machine_smoke_evidence():
+    """executed 集合必须逐条对得上真机冒烟的执行回执，不许凭感觉加。"""
+    executed = {cap.name for cap in CAPABILITIES if cap.executed_on}
+    assert executed == _SMOKE_2026_09_30_EXECUTED, (
+        "executed 集合与 2026-09-30 真机冒烟证据不一致：多了 %s / 少了 %s"
+        % (sorted(executed - _SMOKE_2026_09_30_EXECUTED),
+           sorted(_SMOKE_2026_09_30_EXECUTED - executed)))
+
+
+def test_capability_report_exposes_executed_on():
+    report = PainterAPI(make_module()).capability_report()
+    items = report["capabilities"]
+    assert all("executed_on" in item for item in items.values())
+    assert sum(1 for item in items.values() if item["executed_on"]) == \
+        len(_SMOKE_2026_09_30_EXECUTED)
+    # 只探测过的一眼可辨：insert_paint 在冒烟计划里从未执行
+    assert items["layerstack.insert_paint"]["executed_on"] is None

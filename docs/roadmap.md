@@ -90,6 +90,11 @@ AttributeError。对照本机官方声明文件（Python API 0.3.4 / Painter 11.
 
 1. **真机冒烟先跑一遍**：在装了 Painter 的机器上执行
    `SP AI 集成冒烟…`，把 `latest.json` 作为 0.7.0 的验收证据。
+   ✅ **已完成（2026-09-30）**：经 Painter 官方 `--enable-remote-scripting`
+   通道无人值守执行，`outcome: pass`、两批 `verified: true / failed: 0`、
+   能力 38/38、声明 57/57；门禁 `check_smoke_report.py --min-level project`
+   退出码 0。过程中抓到并修复两个真实缺陷（Color 契约 / API 证据形态，
+   见 `ad6a0a8`）。
 2. **Provider Adapter 与能力矩阵（§5 / §4.2）**：给每个 provider 声明
    `capabilities`（vision / web_search / image_search / image_generation /
    tool_calling），Master Agent 按能力路由而不是写死模型名。
@@ -100,3 +105,8 @@ AttributeError。对照本机官方声明文件（Python API 0.3.4 / Painter 11.
    目前有 `ScopedModification`（缺失时显式降级），但没有 checkpoint 与回滚。
 6. **Capability 表按真机结果收敛**：把冒烟暴露出来的缺失能力写回
    `painter_api.py` 的 `verified_on`，让「哪些能力在哪个版本可用」越跑越准。
+   ✅ **已完成（2026-09-30）**：`Capability` 拆成 `verified_on`（真机探测到
+   符号存在）与 `executed_on`（真机完整执行成功）两个独立标记；本次冒烟
+   实际执行过的 12 条能力已按执行回执标记，集合由回归测试锁死
+   （`test_executed_set_is_exactly_the_real_machine_smoke_evidence`），
+   冒烟报告 `api_surface.capabilities.executed` 会持续显示执行覆盖度。

@@ -157,7 +157,7 @@ def environment(plugin_version: str = "", host_version: str = "") -> dict:
 def api_surface() -> dict:
     """L0：官方能力探测 + 工具声明路径的真实解析结果。"""
     surface = {
-        "capabilities": {"total": 0, "supported": 0, "unsupported": []},
+        "capabilities": {"total": 0, "supported": 0, "executed": 0, "unsupported": []},
         "declarations": {"tools": 0, "paths": 0, "ok": 0, "mismatched": [], "unknown": []},
     }
     api = default_api()
@@ -169,6 +169,10 @@ def api_surface() -> dict:
         surface["capabilities"]["total"] = len(items)
         surface["capabilities"]["supported"] = sum(
             1 for item in items.values() if item.get("supported"))
+        # executed = 不只是探测到、而是在真机上完整执行过（painter_api 里
+        # 标了 executed_on 的那些）。数字小于 supported 是正常的。
+        surface["capabilities"]["executed"] = sum(
+            1 for item in items.values() if item.get("executed_on"))
         surface["capabilities"]["unsupported"] = sorted(
             name for name, item in items.items() if not item.get("supported"))
     except (PainterUnavailable, AdapterError) as exc:
@@ -472,7 +476,8 @@ def summarize(report: dict) -> str:
         "Painter %s / 官方 API %s / 插件 %s" % (
             env.get("painter_version", "?"), env.get("python_api_version", "?"),
             env.get("plugin_version") or "?"),
-        "能力：%s/%s 可用" % (caps.get("supported", 0), caps.get("total", 0)),
+        "能力：%s/%s 可用（其中 %s 条在真机执行过，非仅探测）" % (
+            caps.get("supported", 0), caps.get("total", 0), caps.get("executed", 0)),
         "声明核对：%s/%s 条工具声明路径可解析" % (
             decl.get("ok", 0), decl.get("paths", 0)),
     ]

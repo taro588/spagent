@@ -28,7 +28,13 @@ Painter 11.0.0.4202）做了一次普查，抓到三处真实会崩的调用：
    并对照 `PAINTER_MIN_VERSION`（manifest 的 `min_painter_version`）判定是否受支持。
    结果通过 `painter_context.api_context()` 进入给模型的项目上下文。
 2. **探能力** `CAPABILITIES` / `supports()` / `require()`：每条能力声明探测路径、
-   说明、以及「我们实测确认过的版本」（`verified_on`）。缺能力时抛
+   说明、以及两个独立的实测标记——`verified_on`（真机上**探测到符号存在**的
+   官方 API 版本）与 `executed_on`（真机上**完整执行成功**的版本；`None` 表示
+   只探测过、还没在真实计划里跑过）。两者必须分开记：「符号存在」和「签名
+   契约真的对」是两件事——Color 契约缺陷（`ad6a0a8`）就是探测全绿、一执行才炸
+   的反例。`executed_on` 的集合由测试锁死为真机冒烟的执行回执证据
+   （`tests/test_painter_api.py::test_executed_set_is_exactly_the_real_machine_smoke_evidence`），
+   每跑一次真机冒烟后把新执行过的能力补进去。缺能力时抛
    `UnsupportedCapability`，消息里带能力名与探测符号，例如
    「当前 Painter 不提供 baking.bake_selected_textures 能力：缺少官方符号
    baking.bake_selected_textures_async」。
