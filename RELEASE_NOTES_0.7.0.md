@@ -1,5 +1,40 @@
 # 0.7.0 / HOST 1.9.2 — Painter 官方 API 适配层（规格 §28-2）
 
+## 真机验收结果（2026-09-30，Painter 11.0.0.4202 / 官方 Python API 0.3.4）
+
+在一个隔离的 Painter 实例里跑完整集成冒烟（经 `--enable-remote-scripting` 注入，
+不依赖人工点菜单），结论 **pass**：
+
+| 项目 | 结果 |
+|---|---|
+| 官方能力探测 | **38 / 38 可用** |
+| 工具声明路径核对 | **57 / 57 可解析，0 mismatch** |
+| 核心批次（create_fill_layer / set_base_color / set_roughness / set_metallic / set_geometry_mask / add_levels） | 通过；执行后 API 校验 verified、failed 0 |
+| 进阶批次（create_group / save_smart_material） | 通过；执行后 API 校验 verified、failed 0 |
+| 临时工程 | 用 Painter 自带 `cubes_1_ts.fbx` 创建、就绪、结束关闭（未保存） |
+
+**首次真机运行直接失败**，抓到一个只在真机上才会现形的缺陷：
+
+```
+AttributeError: 'float' object has no attribute 'value'
+```
+
+根因：官方 `colormanagement.Color(r, g, b, color_space=None)` **只有 RGB，没有
+alpha**。我们把第 4 个分量当 alpha 传进去，它落到 `color_space` 上，官方内部
+`_to_private_color_space()` 随即取 `.value` 失败 —— 三个核心单通道写入全部因此
+挂掉，而 `create_fill_layer` / `set_geometry_mask` / `add_levels` 正常。
+
+同一个坑还藏在测试桩里：假 Painter 的 `Color` 原先写成 `lambda r, g, b, a:`
+（收 4 个参数），正是它把真机必然失败的调用放成了假绿灯。桩已改为按官方签名
+（3 分量）并复现同款 `AttributeError`。
+
+附带修掉第二处契约不一致：适配层对「一个动作拆成多个官方调用」回执的是
+`applied`（几何遮罩的三次调用），校验器却只认 `api`，于是执行成功也被判
+证据不足；`add_levels` / `create_group` 的结果则完全没有留下入口证据。
+
+修复后：pytest **138 项**全绿（新增 5 条回归），真机冒烟 **pass**，
+`tools/check_smoke_report.py --min-level project` 返回 `✓ 冒烟证据有效`。
+
 本轮没有新的界面功能，交付的是**执行底座**：以后官方 API 换名、换签名、
 换版本，错误会在「动手之前」说清楚，而不是执行到一半炸 AttributeError。
 
