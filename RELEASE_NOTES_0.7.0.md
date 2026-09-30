@@ -93,21 +93,28 @@ alpha**。我们把第 4 个分量当 alpha 传进去，它落到 `color_space` 
 
 ## 5. 验证
 
-* `pytest` **97 项全绿**（68 → 97）：
+* `pytest` **143 项全绿**（68 → 143）：
   * `tests/test_painter_api.py` 18 项 —— 假模块驱动的版本读取 / 能力探测 /
     事务降级 / 几何遮罩映射 / Smart Material 语义；
-  * `tests/test_actions_execute.py` 7 项 —— 用「假 Painter」真的把 `execute_plan`
+  * `tests/test_actions_execute.py` 12 项 —— 用「假 Painter」真的把 `execute_plan`
     跑一遍，证明修好的三处可以工作，并锁住「缺能力不得静默」；
   * `tests/test_painter_api_conformance.py` 4 项 —— 与官方声明文件比对
-    （本机实跑；无 Painter 的 CI 自动跳过）。
-* `tools/painter_api_census.py --check-catalog`：**63 条声明，缺失 0，别名 0**。
+    （本机实跑；无 Painter 的 CI 自动跳过）；
+  * `tests/test_integration_smoke.py` 29 项 —— 工程生命周期与两批计划的校验逻辑；
+  * `tests/test_tool_registry.py` 27 项 —— 工具注册表与声明路径的单一事实源；
+  * `tests/test_diagnostics_ui.py` 5 项 —— **关闭用户工程前的独立确认闸**
+    （取消即中止 / 确认才运行 / 未保存路径不弹框 / 探测级与无工程不弹框）；
+  * `tests/validate_release.py` 48 项 —— 版本号六处同步、发布物完整性。
+* `tools/painter_api_census.py --check-catalog`：**64 条声明，缺失 0，别名 0**。
 
 ## 6. 用户可见变化
 
 * 几何遮罩类动作、`save_smart_material` / `save_smart_mask` 从「必然报错」
   变成可用（Smart Material/Mask 存为工程内资源，不再假装写文件）；
 * 缺能力的动作现在会得到中文说明（含能力名与所需符号），而不是堆栈报错；
-* 资源导入的 `usage` 可以用 `material` / `smart material` 这类自然写法。
+* 资源导入的 `usage` 可以用 `material` / `smart material` 这类自然写法；
+* 跑「完整冒烟」时若当前有已保存的工程，会先弹一个**独立确认框**列出该工程，
+  取消则一步都不跑（此前只是在上一级说明文字里顺带提一句）。
 
 ---
 

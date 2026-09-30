@@ -50,6 +50,43 @@ def _show_result(QtWidgets, report: dict, path: str) -> None:
         QtWidgets.QMessageBox.warning(None, TITLE, text)
 
 
+def _project_label() -> str:
+    """确认框里用来标识「将被关掉的是哪个工程」：文件路径优先，其次工程名。"""
+    for getter in ("file_path", "name"):
+        try:
+            value = getattr(sp.project, getter)()
+        except Exception:
+            continue
+        if value:
+            return str(value)
+    return ""
+
+
+def _confirm_close_open_project(QtWidgets) -> bool:
+    """工程已保存、但完整冒烟必须先把它关掉时，向用户要一次**独立**的显式确认。
+
+    为什么不能省：上一级菜单的说明文字只顺带提了一句「会被关闭」，而关工程是
+    破坏性的——当前选中、撤销栈、界面状态都会丢，且结束后**不会**自动恢复。
+    破坏性动作必须由用户针对该动作本身点头，而不是在读另一段文字时默认继承。
+    返回 True 表示用户明确同意继续。
+    """
+    label = _project_label()
+    box = QtWidgets.QMessageBox()
+    box.setWindowTitle(TITLE)
+    box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+    box.setText("完整冒烟需要先关闭当前工程。")
+    box.setInformativeText(
+        "工程：%s\n\n"
+        "它已保存，但冒烟结束后**不会**自动重新打开；\n"
+        "冒烟期间会新建一个临时工程，跑完即关闭且不保存。\n\n"
+        "是否关闭当前工程并继续？" % (label or "（未命名工程）"))
+    go_button = box.addButton(
+        "关闭工程并继续", QtWidgets.QMessageBox.ButtonRole.DestructiveRole)
+    box.addButton("取消", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+    box.exec()
+    return box.clickedButton() is go_button
+
+
 def run_smoke(QtWidgets, QtCore, plugin_version: str, level: str = smoke.LEVEL_PROBE) -> dict:
     """跑一次冒烟、落盘、把结果摆给用户看。返回报告字典（便于测试/复用）。"""
     confirm = None
@@ -65,7 +102,9 @@ def run_smoke(QtWidgets, QtCore, plugin_version: str, level: str = smoke.LEVEL_P
                     "当前工程有未保存的改动，冒烟不会运行。\n\n"
                     "请先保存或关闭工程，再重试——插件不会替你关掉任何工程。")
                 return {}
-        confirm = lambda: True  # noqa: E731 —— 走这条路径说明用户已在确认框里选过
+            if not _confirm_close_open_project(QtWidgets):
+                return {}
+            confirm = lambda: True  # noqa: E731 —— 用户已在上面那个确认框里点过「继续」
 
     _busy(QtWidgets, QtCore, True)
     try:
