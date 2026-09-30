@@ -93,9 +93,10 @@ alpha**。我们把第 4 个分量当 alpha 传进去，它落到 `color_space` 
 
 ## 5. 验证
 
-* `pytest` **143 项全绿**（68 → 143）：
-  * `tests/test_painter_api.py` 18 项 —— 假模块驱动的版本读取 / 能力探测 /
-    事务降级 / 几何遮罩映射 / Smart Material 语义；
+* `pytest` **146 项全绿**（68 → 146）：
+  * `tests/test_painter_api.py` 21 项 —— 假模块驱动的版本读取 / 能力探测 /
+    事务降级 / 几何遮罩映射 / Smart Material 语义 / **executed_on 与真机执行
+    证据的逐条锁定**；
   * `tests/test_actions_execute.py` 12 项 —— 用「假 Painter」真的把 `execute_plan`
     跑一遍，证明修好的三处可以工作，并锁住「缺能力不得静默」；
   * `tests/test_painter_api_conformance.py` 4 项 —— 与官方声明文件比对
