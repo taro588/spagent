@@ -10,7 +10,7 @@ import time
 import urllib.request
 
 from core.actions import HIGH_IMPACT_ACTIONS, execute_plan, validate_plan
-from core.ai_client import (AI_CLIENT_BUILD, PROVIDERS, LAST_USAGE,
+from core.ai_client import (AI_CLIENT_BUILD, PROVIDERS, LAST_USAGE, LAST_IMAGES,
                             CAPABILITY_LABELS, chat, provider_capabilities,
                             vision_gate, web_search)
 from core.painter_context import prompt_context
@@ -32,7 +32,7 @@ SYSTEM_PROMPT = """你是 SP AI Assistant，运行在 Adobe Substance 3D Painter
 bake 只有在用户明确要求“烘焙/烘焙法线AO曲率”等，或明确要求依赖 Mesh Map 的效果并且确实需要重新烘焙时才设为 true；不能因为“创建材质”自动触发 bake_start。
 材质工作流可选项：material、channels、parameters、smart_mask、generator、filter、bake、export_path、export_preset。没有用户要求的选项保持为空/false。
 完成材质制作后，如用户明确要求输出贴图，再使用 export_textures。
-你可以在回复中附带参考图片：使用 Markdown 图片语法 ![标题](图片地址)。需要找参考图时，优先调用 image_search 工具——它返回结构化结果，其中 local_path 是已缓存到本地的图片文件路径，把它填进 Markdown 即可（不要自己编造 URL 或路径）。用户提供的真实图片 URL 也可以直接使用。插件会把图片渲染成卡片网格（缩略图 + 标题 + 来源）。用户询问材质/贴图参考、搜索结果展示等场景应尽量带图，并在拿到图后基于图片内容给出分析（颜色、质感、磨损分布等），形成「搜索 → 图片显示 → 看图分析 → 材质意图」的完整回答。
+你可以在回复中附带参考图片：使用 Markdown 图片语法 ![标题](图片地址)。需要找参考图时，优先调用 image_search 工具——它返回结构化结果，其中 local_path 是已缓存到本地的图片文件路径，把回执里现成的 markdown 字段整段复制进回复即可（不要自己编造 URL 或路径，也绝对禁止只把路径当纯文本输出——那样用户在对话框里看不到图）。用户提供的真实图片 URL 也可以直接使用。插件会把图片渲染成卡片网格（缩略图 + 标题 + 来源）。用户询问材质/贴图参考、搜索结果展示等场景应尽量带图，并在拿到图后基于图片内容给出分析（颜色、质感、磨损分布等），形成「搜索 → 图片显示 → 看图分析 → 材质意图」的完整回答。
 """
 # §17 权限模型：EXPORT / DANGEROUS 级别的工具在任何模式下都必须先确认。
 # 清单来自 Tool Registry（core.actions 再导出），不在这里维护第二份。
@@ -52,6 +52,9 @@ class _Worker(QtCore.QObject):
             provider, model, key, base_url, messages = self.args
             text = chat(provider, messages, model, key, base_url)
             meta = dict(LAST_USAGE)
+            # 规格 §6 兜底：本轮 image_search 命中的本地缓存图随回复带下去，
+            # 就算模型没写 Markdown 嵌图，图也要显示在对话框里。
+            meta["images"] = [dict(item) for item in LAST_IMAGES]
             meta["elapsed"] = round(time.monotonic() - started, 1)
             meta.setdefault("model", model)
             self.finished.emit("ok", text, meta)
@@ -68,7 +71,7 @@ class ChatDock(QtWidgets.QWidget):
 
     # True when the user activates the 浏览器 tab (show the side browser pane).
     browser_tab_changed = QtCore.Signal(bool)
-    def __init__(self, version_text="0.7.2"):
+    def __init__(self, version_text="0.7.3"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
@@ -839,15 +842,32 @@ class ChatDock(QtWidgets.QWidget):
 
         规格 §6：image_search 结果的 local_path 是本地缓存文件，模型会把它
         写成 Markdown 图片 —— 这里同样认（绝对路径或 file://），渲染不依赖
-        临时远程 URL。"""
+        临时远程 URL。
+
+        现实里模型经常不听话：只把路径当纯文本输出（不带 ![]() 语法），
+        或者在 JSON 里把反斜杠写成 \\\\。第三条 pattern 就是给这类输出兜底：
+        只要正文里出现 media_cache 下的绝对路径，就当图片抽出来显示——
+        用户要的是图，不是一行文件夹路径。"""
         text = str(message or "")
         found = []
+
+        def _norm(url):
+            # JSON 转义的双反斜杠归一成单反斜杠，QImage 才认
+            return url.replace("\\\\", "\\")
+
         pattern = (r"!\[([^\]]*)\]\((https?://[^)\s]+|data:image/[^)\s]+"
-                   r"|[A-Za-z]:[/\\][^)\s]+|file:/[/\\][^)\s]+)\)")
+                   r"|[A-Za-z]:[/\\][^)]+|file:/[/\\][^)]+)\)")
         for match in re.finditer(pattern, text):
-            found.append({"url": match.group(2).strip(), "alt": match.group(1).strip()})
+            found.append({"url": _norm(match.group(2).strip()), "alt": match.group(1).strip()})
         for match in re.finditer(r'(?:image_url|image|url|local_path)\s*[:=]\s*["\'](https?://[^"\']+|data:image/[^"\']+|[A-Za-z]:[/\\][^"\']+|file:/[/\\][^"\']+)', text):
-            found.append({"url": match.group(1).strip(), "alt": ""})
+            found.append({"url": _norm(match.group(1).strip()), "alt": ""})
+        # 裸路径兜底：正文里任何位置的 media_cache 绝对路径（正反斜杠都认）。
+        # 段内允许空格——真实缓存路径就是 %LOCALAPPDATA%\SP AI Assistant\...，
+        # 把 \s 排除在段外会导致整条路径永远匹配不上（0.7.2 实测翻车点）。
+        for match in re.finditer(
+                r'[A-Za-z]:[/\\](?:[^\\/:*?"<>|]*[/\\])*media_cache[/\\][^\s"\'`)\]），。；、]+',
+                text):
+            found.append({"url": _norm(match.group(0)), "alt": ""})
         deduped = []
         seen = set()
         for item in found:
@@ -862,6 +882,11 @@ class ChatDock(QtWidgets.QWidget):
             text = json.dumps(message, ensure_ascii=False, indent=2)
         found = list(images or [])
         found.extend(self._extract_images(text))
+        # 规格 §6 兜底：AI 回复自动带上本轮 image_search 命中的缓存图
+        # （meta 里由 worker 放进来），不依赖模型自己写 Markdown。
+        merged_meta = dict(meta) if meta else dict(self._last_meta)
+        if str(role) == "AI":
+            found.extend(merged_meta.get("images") or [])
         normalized = []
         seen = set()
         for img in found:
@@ -877,7 +902,7 @@ class ChatDock(QtWidgets.QWidget):
             "label": str(role),
             "text": text,
             "images": normalized,
-            "meta": dict(meta) if meta else dict(self._last_meta),
+            "meta": merged_meta,
             "expanded": False,
             "sys_expanded": False,
             "show_all_images": False,
@@ -996,6 +1021,26 @@ class ChatDock(QtWidgets.QWidget):
         host = match.group(1) if match else ""
         return host[4:] if host.startswith("www.") else host
 
+    @staticmethod
+    def _qimage_data_url(image, width=300):
+        """把已解码的 QImage 缩成 width 宽的 PNG data URL（规格 §6.1）。
+
+        为什么必须内嵌：对话页是 setHtml() 加载的（无 file: 起点），QWebEngine
+        解析不了 `C:\\...` 裸路径的 img src——本地缓存图如果直接引用路径，
+        用户只能看到占位框和「本地缓存」字样，永远看不到图。把缩略图
+        base64 进 HTML，显示才不依赖 WebEngine 的本地文件策略。"""
+        if image is None or image.isNull():
+            return ""
+        scaled = image.scaled(
+            width, width, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation)
+        buffer = QtCore.QBuffer()
+        buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+        if not scaled.save(buffer, "PNG"):
+            return ""
+        return "data:image/png;base64," + base64.b64encode(
+            bytes(buffer.data())).decode("ascii")
+
     def _images_html(self, images):
         """User-attachment strip (data URLs render immediately)."""
         blocks = ""
@@ -1021,6 +1066,14 @@ class ChatDock(QtWidgets.QWidget):
             url = img["url"]
             thumb = self._thumb_cache.get(url)
             if isinstance(thumb, QtGui.QImage) and not thumb.isNull():
+                # 已解码的缩略图直接内嵌 data URL（本地路径 src 在 setHtml
+                # 页面里加载不出来，见 _qimage_data_url 的说明）
+                data_url = self._qimage_data_url(thumb)
+                picture = (f'<img src="{data_url}" width="150">'
+                           if data_url else
+                           f'<img src="{html.escape(url, quote=True)}" width="150">')
+            elif str(url).startswith(("http://", "https://", "data:image/")):
+                # 尚未解码/解码失败的远程或内联图：直接引用 URL
                 picture = f'<img src="{html.escape(url, quote=True)}" width="150">'
             else:
                 picture = (
@@ -1590,5 +1643,5 @@ class ChatDock(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, callback))
 
 
-def build_chat_dock(version_text="0.7.2"):
+def build_chat_dock(version_text="0.7.3"):
     return ChatDock(version_text)

@@ -114,6 +114,14 @@ AttributeError。对照本机官方声明文件（Python API 0.3.4 / Painter 11.
    Chat UI 卡片吃本地路径（「搜索 → 图片显示 → 看图分析 → 材质意图」）。
    能力矩阵 image_search 全员声明，并新增 wire 锁测试钉死「声明必须有
    接线」（来自真实证伪：此前矩阵与接线之间无锁）。
+   ✅ **验收修正（0.7.3）**：真机实测「图片返回的是本地文件夹路径而不是
+   图」。三层修复：卡片缩略图内嵌 data URL（setHtml 页面加载不了
+   `C:\...` 裸路径 src，这是根因一）；`_extract_images` 认裸 media_cache
+   路径（含空格/双反斜杠/正斜杠——旧正则把空格排除在段外，带空格的真实
+   缓存路径永远匹配不上）；`ai_client.LAST_IMAGES` 随 meta 兜底附加，
+   模型不写 Markdown 图也显示；回执带现成 markdown 片段 + 系统提示明令
+   禁止只贴路径。锁在 `tests/test_chat_dock_images.py`（9 项）+ 能力
+   测试 4 项，三处证伪全部如实红。
 4. **PBR 生成与质量门（§8 / §9）+ Asset Registry（§10）**。
 5. **Transaction / Rollback 与 Task State Machine（§16 / §19）**：
    目前有 `ScopedModification`（缺失时显式降级），但没有 checkpoint 与回滚。

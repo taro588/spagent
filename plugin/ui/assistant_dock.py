@@ -90,7 +90,7 @@ class CollapsibleBrowser(QtWidgets.QWidget):
 class AssistantDock(QtWidgets.QWidget):
     """Single dock: chat on the left, collapsible ChatGPT-style browser on the right."""
 
-    def __init__(self, version_text="0.7.2"):
+    def __init__(self, version_text="0.7.3"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")

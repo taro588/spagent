@@ -12,7 +12,7 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.7.2"
+    assert data["version"] == "0.7.3"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["max_tested_painter_version"] == "11.0.x"
@@ -32,13 +32,13 @@ def test_release_versions_are_synchronized():
     assert f'#define MyAppVersion "{version}"' in iss
     assert f"name: SP-AI-Assistant-Setup-{version}" in workflow
     assert f"SP_AI_Assistant_Setup_{{#MyAppVersion}}" in iss
-    assert "SP_AI_Assistant_Setup_0.7.2.sha256" in workflow
+    assert "SP_AI_Assistant_Setup_0.7.3.sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
 
 
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.7.2"' in iss
+    assert '#define MyAppVersion "0.7.3"' in iss
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
     assert 'Source: "..\\plugin\\core\\*"' in iss
@@ -888,3 +888,25 @@ def test_release_notes_exist_for_the_current_version():
     notes = ROOT / f"RELEASE_NOTES_{manifest['version']}.md"
     if notes.exists():
         assert "Painter" in notes.read_text(encoding="utf-8")
+
+
+def test_image_cards_render_inline_in_chat():
+    """0.7.3：图片必须显示在对话框里（用户实测 0.7.2 只见路径不见图）。
+
+    三层修复的静态锁（行为锁在 test_chat_dock_images.py）：
+    - 渲染层：有已解码缩略图必须走 _qimage_data_url 内嵌 data URL；
+    - 兜底层：LAST_IMAGES 随 meta 进 UI，AI 消息合并 meta['images']；
+    - 提示层：系统提示明令禁止只输出路径文本。
+    """
+    root = Path(__file__).resolve().parents[1]
+    dock = (root / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+    client = (root / "plugin" / "core" / "ai_client.py").read_text(encoding="utf-8")
+
+    assert "def _qimage_data_url" in dock
+    assert "data:image/png;base64," in dock
+    assert 'meta["images"] = [dict(item) for item in LAST_IMAGES]' in dock
+    assert "禁止只把路径当纯文本输出" in dock
+    # 回执给模型的现成 Markdown 片段（不许模型自己拼）
+    assert 'receipt["markdown"]' in client
+    assert "LAST_IMAGES.append" in client
+    assert "LAST_IMAGES.clear()" in client

@@ -187,8 +187,10 @@ IMAGE_SEARCH_TOOL = {
         "description": (
             "搜索参考图片并返回结构化结果（标题/来源/尺寸/本地缓存路径）。"
             "适用场景：用户要材质参考、风格参考、贴图灵感、看图分析。"
-            "结果里的 local_path 是已缓存到本地的图片文件，可直接在回复中"
-            "用 Markdown 图片语法 ![标题](local_path) 展示给用户。"
+            "结果里的 local_path 是已缓存到本地的图片文件，必须用 Markdown "
+            "图片语法 ![标题](local_path) 把图片嵌入回复（回执 markdown 字段 "
+            "是现成的，整段复制即可），禁止只把路径当纯文本输出——那样用户 "
+            "在对话框里看不到图。"
         ),
         "parameters": {
             "type": "object",
@@ -204,16 +206,37 @@ IMAGE_SEARCH_TOOL = {
 
 
 def _run_image_search(args: dict) -> dict:
-    """执行 image_search 工具调用并返回回执 dict（规格 §6 管线入口）。"""
+    """执行 image_search 工具调用并返回回执 dict（规格 §6 管线入口）。
+
+    两件与显示强相关的副作用：
+    - 回执附 markdown 字段：每张缓存成功的图一行现成的 ![标题](local_path)，
+      模型整段复制进回复，图片就会显示在对话框里。
+    - 把命中的本地缓存图记进 LAST_IMAGES，Chat UI 兜底附加显示——
+      就算模型不听话只贴路径文本，图也得出现在对话里。
+    """
     from core import media as _media
     query = (args or {}).get("query")
     max_results = (args or {}).get("max_results", 8)
     if not str(query or "").strip():
         return {"query": "", "error": "image_search 的 query 不能为空", "results": []}
     try:
-        return _media.search_images_cached(str(query), int(max_results or 8))
+        receipt = _media.search_images_cached(str(query), int(max_results or 8))
     except Exception as exc:  # 兜底：回执里给模型可读的错误而不是中断会话
         return {"query": str(query), "error": str(exc), "results": []}
+    cached = [(m.get("title") or "参考图", m.get("local_path") or "")
+              for m in receipt.get("results") or [] if m.get("local_path")]
+    if cached:
+        receipt["markdown"] = "\n".join(
+            "![%s](%s)" % (title.replace("]", "").replace("[", ""), path)
+            for title, path in cached)
+        receipt["hint"] = (
+            "把 markdown 字段整段复制进你的回复，图片就会显示在对话框里；"
+            "不要只输出路径文本。"
+        )
+        for title, path in cached:
+            if not any(item.get("url") == path for item in LAST_IMAGES):
+                LAST_IMAGES.append({"url": path, "alt": title})
+    return receipt
 
 
 class AIError(RuntimeError):
@@ -223,6 +246,11 @@ class AIError(RuntimeError):
 # Metadata of the most recent chat() call: token usage reported by the
 # provider (normalized keys), plus the model that actually answered.
 LAST_USAGE = {}
+
+# 本轮 chat() 里 image_search 真正缓存到本地的图片 [{url, alt}]
+# （规格 §6）：Chat UI 拿它做兜底显示——即使模型没把 local_path 写成
+# Markdown，图也要显示在对话框里，不能退化成一行路径文本。
+LAST_IMAGES = []
 
 
 def _record_usage(data):
@@ -721,6 +749,7 @@ def chat(provider_name: str, messages: list[dict], model: str, api_key: str, bas
     LAST_USAGE.clear()
     LAST_USAGE["model"] = model
     LAST_USAGE["provider"] = provider_name
+    LAST_IMAGES.clear()  # 每轮对话重置兜底图（规格 §6）
     base = (base_url or info["base_url"]).strip()
     provider_id = info["id"]
     if provider_id == "openai":

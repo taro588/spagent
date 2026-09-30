@@ -134,3 +134,78 @@ def test_vision_gate_passes_when_capable_or_no_images():
     assert vision_gate("DeepSeek", "deepseek-chat", False) is None
     # provider 没选好时放行，交给 chat() 既有的「未知 AI 提供商」校验
     assert vision_gate("", "", True) is None
+
+
+# --------------------------------------------------------------- 图片直显兜底（规格 §6）
+# 0.7.2 用户实测：模型只把 local_path 当纯文本输出，对话框里只有路径没有图。
+# 这里锁两条硬管线：回执带现成 Markdown；LAST_IMAGES 随 meta 进 UI 兜底显示。
+_LOCAL_A = r"C:/Users/hu/AppData/Local/SP AI Assistant/media_cache/aa11.png"
+_LOCAL_B = r"C:/Users/hu/AppData/Local/SP AI Assistant/media_cache/bb22.png"
+
+
+def _fake_receipt():
+    return {
+        "query": "铜锈 材质",
+        "results": [
+            {"title": "铜锈特写", "local_path": _LOCAL_A},
+            {"title": "铜锈地板", "local_path": _LOCAL_B},
+            {"title": "失败的图", "local_path": "", "error": "下载失败"},
+        ],
+        "cached": 2,
+        "failed": [{"title": "失败的图", "error": "下载失败"}],
+    }
+
+
+def test_image_search_receipt_carries_ready_markdown(monkeypatch):
+    """回执必须带模型可整段复制的 markdown 片段 + hint，不许模型自己拼。"""
+    from core import ai_client, media
+
+    monkeypatch.setattr(media, "search_images_cached", lambda q, n: _fake_receipt())
+    ai_client.LAST_IMAGES.clear()
+    receipt = ai_client._run_image_search({"query": "铜锈", "max_results": 3})
+
+    assert receipt["markdown"] == (
+        "![铜锈特写](%s)\n![铜锈地板](%s)" % (_LOCAL_A, _LOCAL_B))
+    assert "复制进你的回复" in receipt["hint"]
+    # 只有缓存成功的图进 markdown，失败的不进
+    assert "失败的图" not in receipt["markdown"]
+
+
+def test_last_images_records_cached_paths_for_ui_fallback(monkeypatch):
+    """工具命中的本地缓存图必须记进 LAST_IMAGES（UI 兜底显示的数据源），
+    重复搜索同一张图不重复记。"""
+    from core import ai_client, media
+
+    monkeypatch.setattr(media, "search_images_cached", lambda q, n: _fake_receipt())
+    ai_client.LAST_IMAGES.clear()
+
+    ai_client._run_image_search({"query": "铜锈"})
+    assert [img["url"] for img in ai_client.LAST_IMAGES] == [_LOCAL_A, _LOCAL_B]
+    assert ai_client.LAST_IMAGES[0]["alt"] == "铜锈特写"
+
+    ai_client._run_image_search({"query": "铜锈"})  # 同一轮再搜一次
+    assert len(ai_client.LAST_IMAGES) == 2, "同一张图不得重复记入兜底清单"
+
+
+def test_chat_resets_last_images_each_turn(monkeypatch):
+    """每轮 chat() 开头必须清空 LAST_IMAGES——上一轮的图不能漏进下一轮。"""
+    from core import ai_client
+
+    ai_client.LAST_IMAGES.append({"url": _LOCAL_A, "alt": "旧图"})
+    monkeypatch.setattr(ai_client, "_openai_responses", lambda *a, **k: "好的")
+    provider = next(name for name, info in ai_client.PROVIDERS.items()
+                    if info["id"] == "openai")
+    model = next(iter(ai_client.PROVIDERS[provider].get("models") or ["gpt-x"]))
+    ai_client.chat(provider, [{"role": "user", "content": "hi"}], model, "sk-test")
+
+    assert ai_client.LAST_IMAGES == [], "chat() 必须在开头清空兜底图"
+
+
+def test_empty_query_receipt_has_no_markdown_side_effects():
+    from core import ai_client
+
+    ai_client.LAST_IMAGES.clear()
+    receipt = ai_client._run_image_search({"query": "  "})
+    assert receipt["error"]
+    assert "markdown" not in receipt
+    assert ai_client.LAST_IMAGES == []
