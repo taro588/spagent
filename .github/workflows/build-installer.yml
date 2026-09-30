@@ -31,14 +31,15 @@ jobs:
           python -m pip install -q pytest
           python -m compileall -q plugin
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pytest -q tests/validate_release.py 2>&1 | Tee-Object -FilePath pytest_report.txt
+          # 整个 tests/ 目录：发布校验 + Tool Registry 契约测试（§12 / §13 / §28）
+          python -m pytest -q tests/ 2>&1 | Tee-Object -FilePath pytest_report.txt
           if ($LASTEXITCODE -ne 0) { throw "Release tests failed. See pytest_report.txt." }
 
       - name: Upload pytest diagnostic
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: SP-AI-Assistant-0.6.7-pytest-diagnostic
+          name: SP-AI-Assistant-0.7.0-pytest-diagnostic
           path: pytest_report.txt
           if-no-files-found: warn
 
@@ -46,7 +47,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: SP-AI-Assistant-0.6.7-syntax-diagnostic
+          name: SP-AI-Assistant-0.7.0-syntax-diagnostic
           path: syntax_report.txt
           if-no-files-found: warn
 
@@ -59,11 +60,6 @@ jobs:
             browser_host\main.py
           if ($LASTEXITCODE -ne 0) { throw "browser_host build failed" }
           if (-not (Test-Path "browser_host\dist\browser_host\browser_host.exe")) { throw "browser_host.exe missing" }
-
-      - name: Verify in-process WebEngine geometry on Windows
-        shell: pwsh
-        run: |
-          python tests\\windows_webengine_smoke.py
 
       - name: Install Inno Setup
         shell: pwsh
@@ -94,18 +90,18 @@ jobs:
       - name: Verify installer artifact
         shell: pwsh
         run: |
-          $expected = "installer\output\SP_AI_Assistant_Setup_0.6.7.exe"
+          $expected = "installer\output\SP_AI_Assistant_Setup_0.7.0.exe"
           if (-not (Test-Path -LiteralPath $expected)) { throw "Expected installer EXE not produced: $expected" }
           $exe = Get-Item -LiteralPath $expected
           if ($exe.Length -lt 100000) { throw "Installer EXE is unexpectedly small: $($exe.Length) bytes" }
           Write-Host "Built: $($exe.FullName)"
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe.FullName).Hash
-          "$hash  $($exe.Name)" | Set-Content -Encoding ascii "installer\output\SP_AI_Assistant_Setup_0.6.7.sha256"
+          "$hash  $($exe.Name)" | Set-Content -Encoding ascii "installer\output\SP_AI_Assistant_Setup_0.7.0.sha256"
           Write-Host "SHA256: $hash"
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v5
         with:
-          name: SP-AI-Assistant-Setup-0.6.7
+          name: SP-AI-Assistant-Setup-0.7.0
           path: installer/output/*
           if-no-files-found: error

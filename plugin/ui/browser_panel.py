@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
@@ -28,6 +29,21 @@ except Exception:
 
 HOME_URL = "https://www.bing.com"
 FETCH_TIMEOUT = 15
+
+# Kept in sync with HOST_VERSION in browser_host/main.py (asserted by
+# tests/validate_release.py). A running host that reports a different version
+# comes from an older install — it gets retired and relaunched, so an upgrade
+# can never keep talking to the previous build's layout / GPU behaviour.
+EXPECTED_HOST_VERSION = "1.9.2"
+# The host escalates its own GPU workaround on repeated crash-on-startup, so
+# the watchdog is allowed several attempts (each attempt may boot with a more
+# conservative render mode) before it gives up and offers a manual retry.
+MAX_RELAUNCH = 8
+STABLE_TICKS_TO_FORGIVE = 40  # 40 x 250 ms ≈ 10 s of uptime resets the counter
+# How long we tolerate our own child running without a window before we
+# conclude it is wedged and recycle it (its HWND is rebuilt after embedding
+# and it re-publishes the new one within a second — see HostView._tick).
+HWNDLESS_RECYCLE_SECONDS = 12.0
 _MAX_IMAGES = 18
 _MAX_IMAGE_BYTES = 3 * 1024 * 1024
 _MAX_TEXT = 30000
@@ -568,28 +584,39 @@ class HostView(QtWidgets.QWidget):
         self._process = None
         self._embedded = False
         self._relaunch_count = 0
+        self._alive_ticks = 0
+        self._retired_pids = set()
+        self._hwndless_since = None
 
-        # The native placeholder is the entire HostView.  The loading
-        # label is an overlay so it can never reserve layout space.
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        self.placeholder = QtWidgets.QWidget()
-        self.placeholder.setObjectName("SPAI_Browser_Host_Placeholder")
-        self.placeholder.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
-        self.placeholder.setAutoFillBackground(True)
-        self.placeholder.setStyleSheet("background:#111214; border:0;")
-        self.placeholder.setVisible(False)
-        self.placeholder.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Expanding,
-        )
-        layout.addWidget(self.placeholder, 1)
-
-        self.status = QtWidgets.QLabel("正在启动内置浏览器……", self)
+        self.status = QtWidgets.QLabel("正在启动内置浏览器……")
         self.status.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.status.setStyleSheet("color:#8f96a3; padding:24px;")
-        self.status.raise_()
+        layout.addWidget(self.status)
+        # Recovery must not require restarting Substance Painter: when the host
+        # gives up, the user gets a button that relaunches it immediately.
+        self.retry = QtWidgets.QPushButton("重新启动内置浏览器")
+        self.retry.setObjectName("SPAI_Host_Retry")
+        self.retry.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.retry.setStyleSheet(
+            "QPushButton#SPAI_Host_Retry{background:#10a37f;color:#ffffff;"
+            "border:none;border-radius:8px;padding:7px 18px;font-size:13px;}"
+            "QPushButton#SPAI_Host_Retry:hover{background:#12b98e;}"
+        )
+        self.retry.setVisible(False)
+        row = QtWidgets.QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(self.retry)
+        row.addStretch(1)
+        layout.addLayout(row)
+        self.retry.clicked.connect(self._manual_restart)
+        self.placeholder = QtWidgets.QWidget()
+        self.placeholder.setObjectName("SPAI_Browser_Host_Placeholder")
+        self.placeholder.setStyleSheet("background:#111214;")
+        self.placeholder.setVisible(False)
+        layout.addWidget(self.placeholder, 1)
 
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -598,7 +625,6 @@ class HostView(QtWidgets.QWidget):
         # Sync immediately whenever the placeholder itself is resized, moved
         # to a new native window or re-laid-out (sidebar collapse/expand).
         self.placeholder.installEventFilter(self)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
 
     # ---------- process lifecycle ----------
 
@@ -609,38 +635,161 @@ class HostView(QtWidgets.QWidget):
         except Exception:
             return {}
 
-    def _launch_or_attach(self):
+    def _current_host_hwnd(self) -> int:
+        """HWND of a live host built by *this* plugin version, else 0.
+
+        An older host that survived an upgrade reports a different version; it
+        is retired once so the freshly installed exe takes over (otherwise the
+        session keeps running the previous layout / GPU path forever).
+        """
         state = self._read_state()
         hwnd = int(state.get("hwnd") or 0)
-        if host_embed.is_window(hwnd):
+        if not host_embed.is_window(hwnd):
+            return 0
+        version = str(state.get("version") or "")
+        if version and version != EXPECTED_HOST_VERSION:
+            pid = int(state.get("pid") or 0)
+            if pid and pid not in self._retired_pids:
+                self._retired_pids.add(pid)
+                self._retire_process(pid)
+                self.status.setText("检测到旧版内置浏览器，正在切换新版本……")
+                self.status.setVisible(True)
+            return 0
+        return hwnd
+
+    @staticmethod
+    def _retire_process(pid: int):
+        if not pid:
+            return
+        try:
+            import signal
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        """ctypes-only liveness check (Painter's Python has no psutil)."""
+        if not pid:
+            return False
+        try:
+            import ctypes
+            from ctypes import wintypes as wt
+            k32 = ctypes.windll.kernel32
+            SYNCHRONIZE, QUERY_LIMITED, STILL_ACTIVE = 0x00100000, 0x0400, 259
+            handle = k32.OpenProcess(SYNCHRONIZE | QUERY_LIMITED, False,
+                                     int(pid))
+            if not handle:
+                return False
+            code = wt.DWORD()
+            ok = k32.GetExitCodeProcess(handle, ctypes.byref(code))
+            k32.CloseHandle(handle)
+            return bool(ok) and code.value == STILL_ACTIVE
+        except Exception:
+            return False
+
+    def _child_alive(self) -> bool:
+        return self._process is not None and self._process.poll() is None
+
+    def _retire_own_child(self):
+        """We are adopting a host that is not our child: drop ours first.
+
+        Two live hosts share one state file AND one command channel; they
+        overwrite each other's pid every heartbeat and the plugin flip-flops
+        which window is embedded — tabs visibly change content, clicks land
+        on the invisible twin window (empty-strip menu instead of the tab
+        menu), menus pop at the twin's coordinates. Measured live on
+        2026-09-30: state pid flips 4x in 12 s with two browser_host.exe
+        children of Painter."""
+        proc, self._process = self._process, None
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+            except Exception:
+                pass
+
+    def _manual_restart(self):
+        self.retry.setVisible(False)
+        self._relaunch_count = 0
+        self._alive_ticks = 0
+        self._hwndless_since = None
+        self.status.setText("正在重新启动内置浏览器……")
+        self.status.setVisible(True)
+        self._launch_or_attach()
+
+    def _launch_or_attach(self):
+        hwnd = self._current_host_hwnd()
+        if hwnd:
             self._hwnd = hwnd
+            self._retire_own_child()
+            return
+        # A host recorded in the state file but without a live window is a
+        # zombie (its HWND is being rebuilt) or an orphan of a previous
+        # panel. Retire it first — never let it own the state file and the
+        # command channel alongside the host we are about to spawn.
+        pid = int(self._read_state().get("pid") or 0)
+        if (pid and pid not in self._retired_pids and self._pid_alive(pid)
+                and (self._process is None or self._process.pid != pid)):
+            self._retired_pids.add(pid)
+            self._retire_process(pid)
+        if self._child_alive():
+            # Our own child is alive but its window is momentarily gone:
+            # cross-process embedding makes Qt rebuild the native window and
+            # the host re-publishes the new hwnd immediately (WinIdChange).
+            # Spawning a second browser here was the duplicate-host bug.
             return
         try:
             self._process = subprocess.Popen(
-                [self._exe, "--embedded", "--state-file", self._state_file],
+                [self._exe, "--state-file", self._state_file, "--embedded"],
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except Exception as exc:
             self.status.setText("✗ 内置浏览器启动失败：" + str(exc))
+            self.retry.setVisible(True)
 
     def _tick(self):
         if not self._embedded:
-            self._try_embed()
+            self._tick_detached()
             return
         # embedded: watch for host crash and relaunch
         if not host_embed.is_window(self._hwnd):
             self._embedded = False
             self._hwnd = 0
+            self._alive_ticks = 0
+            if self._child_alive():
+                # HOST 1.9.2: the child process is fine — Qt is rebuilding
+                # its native window and will re-advertise the new hwnd
+                # within a tick. Give it a bounded grace period instead of
+                # spawning a twin; only a wedged (windowless for good) child
+                # gets recycled.
+                now = time.time()
+                if self._hwndless_since is None:
+                    self._hwndless_since = now
+                elif now - self._hwndless_since > HWNDLESS_RECYCLE_SECONDS:
+                    self._hwndless_since = None
+                    self._retire_own_child()
+                return
+            self._hwndless_since = None
             self._relaunch_count += 1
-            if self._relaunch_count <= 3:
-                self.status.setText("内置浏览器已退出，正在重启……")
+            if self._relaunch_count <= MAX_RELAUNCH:
+                self.status.setText(
+                    "内置浏览器已退出，正在自动重启……（第 %d 次）"
+                    % self._relaunch_count)
                 self.status.setVisible(True)
                 self.placeholder.setVisible(False)
                 self._launch_or_attach()
             else:
-                self.status.setText("✗ 内置浏览器反复退出，请重启插件")
+                self.status.setText("✗ 内置浏览器多次异常退出，请点下方按钮重启")
                 self.status.setVisible(True)
+                self.retry.setVisible(True)
             return
+        self._alive_ticks += 1
+        if self._alive_ticks == STABLE_TICKS_TO_FORGIVE:
+            # It survived long enough — forget the crash count so a later
+            # transient failure still gets the full automatic retry budget.
+            self._relaunch_count = 0
+            self.retry.setVisible(False)
         # embedded: Qt can recreate the placeholder's native window (e.g.
         # after hide/show cycles from sidebar collapse) — then the child
         # window ends up parented to a dead HWND and floats as a black box.
@@ -658,24 +807,59 @@ class HostView(QtWidgets.QWidget):
         except Exception:
             return False
 
+    def _tick_detached(self):
+        """Not-embedded tick. 2026-09-30 live failure: with the plugin at
+        0.6.7/1.9.1 facing a 1.9.2 host, the version gate retired the freshly
+        launched host (quiet SIGTERM, no crash log), then the panel sat on
+        the "切换新版本" label forever — _try_embed kept polling a dead hwnd
+        while the death watch below only ran when _embedded was True. A
+        detached panel must also detect "no window and no live child" and
+        spend its relaunch budget."""
+        if self._hwnd and not host_embed.is_window(self._hwnd):
+            self._hwnd = 0
+        if not self._embedded:
+            # Adoption must keep happening every tick: _try_embed() is what
+            # reads the state file and picks up our own child's freshly
+            # published hwnd. (Do not "grace out" before this call — a host
+            # that is merely windowless would then never get adopted and the
+            # panel would recycle a perfectly healthy child after 12 s.)
+            self._try_embed()
+        if self._embedded:
+            return
+        if self._child_alive():
+            # Our own child is alive but windowless (Qt rebuilding its native
+            # window, or still booting): bounded grace, then recycle — same
+            # contract as the embedded path.
+            now = time.time()
+            if self._hwndless_since is None:
+                self._hwndless_since = now
+            elif now - self._hwndless_since > HWNDLESS_RECYCLE_SECONDS:
+                self._hwndless_since = None
+                self._retire_own_child()
+            return
+        self._hwndless_since = None
+        self._relaunch_count += 1
+        if self._relaunch_count <= MAX_RELAUNCH:
+            self.status.setText(
+                "内置浏览器已退出，正在自动重启……（第 %d 次）" % self._relaunch_count)
+            self.status.setVisible(True)
+            self._launch_or_attach()
+        else:
+            self.status.setText("✗ 内置浏览器多次异常退出，请点下方按钮重启")
+            self.retry.setVisible(True)
+
     def _try_embed(self):
         if self._embedded:
             return
-        # The browser host can recreate its native top-level HWND during
-        # startup/show. Never keep using a stale handle from the first state
-        # write; refresh the state whenever the cached handle is invalid.
-        if not self._hwnd or not host_embed.is_window(self._hwnd):
-            self._hwnd = 0
-            state = self._read_state()
-            hwnd = int(state.get("hwnd") or 0)
-            if host_embed.is_window(hwnd):
-                self._hwnd = hwnd
+        if not self._hwnd:
+            self._hwnd = self._current_host_hwnd()
             if not self._hwnd:
                 return
         parent_hwnd = int(self.placeholder.winId())
         if host_embed.embed(self._hwnd, parent_hwnd):
             self._embedded = True
             self.status.setVisible(False)
+            self.retry.setVisible(False)
             self.placeholder.setVisible(True)
             host_embed.sync_geometry(self._hwnd, parent_hwnd)
             host_embed.set_visible(self._hwnd, self.isVisible())
@@ -720,17 +904,11 @@ class HostView(QtWidgets.QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Force exact native bounds; this avoids any layout rounding/margins
-        # between the Qt widget and the Win32 placeholder HWND.
-        self.placeholder.setGeometry(self.rect())
-        self.status.setGeometry(self.rect())
         if self._embedded and self._hwnd:
             host_embed.sync_geometry(self._hwnd, int(self.placeholder.winId()))
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.placeholder.setGeometry(self.rect())
-        self.status.setGeometry(self.rect())
         if self._embedded and self._hwnd:
             host_embed.set_visible(self._hwnd, True)
             host_embed.sync_geometry(self._hwnd, int(self.placeholder.winId()))
@@ -882,39 +1060,35 @@ class BrowserPanel(QtWidgets.QWidget):
         self._nav_widget.setLayout(nav)
         root.addWidget(self._nav_widget)
 
-        # --- content: in-process WebEngine > host fallback > reader ---
-        # Qt's own QWebEngineView is a real QWidget and is the stable embedding
-        # path for Painter versions that expose QtWebEngine.  The old
-        # cross-process SetParent host remains only as a compatibility fallback
-        # for Painter installations without WebEngine.
-        root.setContentsMargins(0, 0, 0, 0)
-        if WEB_ENGINE_AVAILABLE:
-            _prepare_persistent_profile()
-            self.view = QtWebEngineWidgets.QWebEngineView()
-            self.view.setStyleSheet("QWebEngineView { border:0; background:#111214; }")
-            self.view.setSizePolicy(
-                QtWidgets.QSizePolicy.Policy.Expanding,
-                QtWidgets.QSizePolicy.Policy.Expanding,
-            )
-            self.view.urlChanged.connect(self._on_web_url)
-            root.addWidget(self.view, 1)
-            self.view.setUrl(QtCore.QUrl(start_url))
-            self._mode = "web"
-            self.reader = None
-            self._strip_widget.setVisible(False)
-        elif _find_browser_host_exe():
-            host_exe = _find_browser_host_exe()
+        # --- content: host process (real Chromium) > in-process WebEngine > reader ---
+        host_exe = _find_browser_host_exe()
+        if host_exe:
             self._mode = "host"
             self.view = None
             self.reader = None
+            # In host mode the embedded browser draws its own chrome and must
+            # sit flush against the chat pane — any outer margin shows up as
+            # the dark "black box" frame users reported.
+            root.setContentsMargins(0, 0, 0, 0)
             self.host = HostView(host_exe, _browser_host_state_file())
             root.addWidget(self.host, 1)
+            # The browser_host process draws its own GPT-style chrome;
+            # the whole Qt tab strip stays hidden in this mode.
             self._strip_widget.setVisible(False)
             self._nav_widget.setVisible(False)
             self._last_host_url = ""
             self._url_timer = QtCore.QTimer(self)
             self._url_timer.timeout.connect(self._poll_host_url)
             self._url_timer.start(2000)
+        elif WEB_ENGINE_AVAILABLE:
+            _prepare_persistent_profile()
+            self.view = QtWebEngineWidgets.QWebEngineView()
+            self.view.urlChanged.connect(self._on_web_url)
+            root.addWidget(self.view, 1)
+            self.view.setUrl(QtCore.QUrl(start_url))
+            self._mode = "web"
+            self.reader = None
+            self._strip_widget.setVisible(False)
         else:
             self.view = None
             self._mode = "reader"

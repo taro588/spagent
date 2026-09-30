@@ -2,80 +2,28 @@ from __future__ import annotations
 
 import substance_painter as sp
 
-ACTION_ALIASES = {
-    "insert_fill_layer": "create_fill_layer",
-    "insert_paint_layer": "create_paint_layer",
-    "insert_group": "create_group",
-    "insert_generator": "add_generator",
-    "insert_filter": "add_filter",
-    "insert_smart_mask": "add_smart_mask",
-    "insert_smart_material": "add_smart_material",
-    "set_fill_color": "set_uniform_color",
-    "set_channel_color": "set_uniform_color",
-}
+from core.painter_api import AdapterError, default_api
+from core.tools import (
+    HIGH_IMPACT_ACTIONS,
+    ToolContractError,
+    action_aliases,
+    check_plan_domains,
+    get_tool,
+    required_params,
+    tool_names,
+    verify_plan as _verify_plan,
+)
 
-SUPPORTED_ACTIONS = {
-    "create_fill_layer",
-    "create_paint_layer",
-    "create_group",
-    "add_mask",
-    "set_opacity",
-    "set_active_channels",
-    "set_projection_mode",
-    "set_projection_scale",
-    "set_fill_property",
-    "set_fill_channel",
-    "set_source_parameters",
-    "set_effect_parameters",
-    "verify_last_created_parameters",
-    "add_generator",
-    "add_filter",
-    "add_smart_mask",
-    "add_smart_material",
-    "set_fill_material",
-    "set_uniform_color",
-    "set_source_resource",
-    "set_source_preset",
-    "set_source_output_mapping",
-    "set_blending_mode",
-    "set_visibility",
-    "set_mask_enabled",
-    "set_mask_background",
-    "set_geometry_mask",
-    "add_anchor_point",
-    "add_color_selection",
-    "add_compare_mask",
-    "add_levels",
-    "texture_stack_select",
-    "texture_channel_add",
-    "texture_channel_remove",
-    "texture_channel_edit",
-    "texture_set_resolution",
-    "project_open",
-    "project_save",
-    "project_save_as",
-    "project_save_copy",
-    "project_reload_mesh",
-    "display_environment",
-    "display_color_lut",
-    "display_tone_mapping",
-    "resource_import_project",
-    "resource_search",
-    "resource_project_list",
-    "bake_start",
-    "bake_highpoly",
-    "export_mesh",
-    "save_smart_material",
-    "save_smart_mask",
-    "rename_selected",
-    "delete_selected",
-    "select_last_created",
-    "export_textures",
-    "apply_base_material",
-    "auto_material_workflow",
-    "ensure_texture_set_ready",
-    "ensure_material_layer",
-}
+# 白名单、别名、必填参数全部来自 Tool Registry（架构文档 §12 单一事实源）。
+# 不要再在这里手写第二份清单——tests/test_tool_registry.py 会断言
+# registry 与实际执行分支一一对应。
+ACTION_ALIASES = action_aliases()
+
+SUPPORTED_ACTIONS = set(tool_names())
+
+# §11/§28-2 API 适配层：命名差异、多态分发、能力探测都在它里面收敛，
+# 这里只负责把计划动作翻译成对适配层的调用。
+API = default_api()
 
 
 class ActionError(RuntimeError):
@@ -287,9 +235,12 @@ def _expand_workflow_actions(plan: dict) -> dict:
             if values:
                 expanded.append({"action": "verify_last_created_parameters", "parameters": values})
         elif kind == "auto_material_workflow":
-            # Baking is opt-in. Creating a material must never implicitly bake.
+            # Baking is opt-in and belongs to its own execution domain
+            # (§13). Creating a material must never implicitly bake; an
+            # explicit bake:true is recorded as a declaration so the
+            # cross-domain guard accepts the very next bake_start.
             if bool(action.get("bake", False)):
-                expanded.append({"action": "bake_start"})
+                expanded.append({"action": "bake_start", "_explicit_bake": True})
             base = dict(action)
             base["action"] = "apply_base_material"
             expanded.extend(_expand_workflow_actions({"actions": [base]})["actions"])
@@ -304,7 +255,7 @@ def _expand_workflow_actions(plan: dict) -> dict:
             if action.get("resolution"):
                 expanded.append({"action": "texture_set_resolution", "resolution": action["resolution"]})
             if bool(action.get("bake", False)):
-                expanded.append({"action": "bake_start"})
+                expanded.append({"action": "bake_start", "_explicit_bake": True})
         elif kind == "ensure_material_layer":
             expanded.append({"action": "create_fill_layer", "name": _name(action.get("name"), "AI Material Layer")})
             material = action.get("material") or action.get("resource")
@@ -313,13 +264,21 @@ def _expand_workflow_actions(plan: dict) -> dict:
             expanded.append({"action": "select_last_created"})
         else:
             expanded.append(action)
-    return {"actions": expanded}
+    # 保留计划级字段（例如 operation_domain），只替换 actions。
+    result = {key: value for key, value in plan.items() if key != "actions"}
+    result["actions"] = expanded
+    return result
 
 
-def validate_plan(plan: dict) -> dict:
-    """Validate an AI-generated plan before any Painter mutation occurs."""
+def validate_plan(plan: dict, operation_domain: str | None = None) -> dict:
+    """Validate an AI-generated plan before any Painter mutation occurs.
+
+    operation_domain 或计划里的同名字段声明了本次任务的执行域（§13）。
+    未声明 = free：非独占域不受限；烘焙 / 导出这类独占域仍必须显式声明。
+    """
     if not isinstance(plan, dict) or not isinstance(plan.get("actions"), list):
         raise ActionError("执行计划必须是包含 actions 数组的对象。")
+    declared = operation_domain or plan.get("operation_domain")
     plan = _expand_workflow_actions(plan)
     actions = plan["actions"]
     if not actions:
@@ -327,61 +286,14 @@ def validate_plan(plan: dict) -> dict:
     if len(actions) > 20:
         raise ActionError("单次最多执行 20 个动作。")
 
-    required = {
-        "set_uniform_color": ("channel", "color"),
-        "set_source_resource": ("channel", "resource"),
-        "set_source_preset": ("preset",),
-        "set_source_output_mapping": ("mapping",),
-        "set_blending_mode": ("mode",),
-        "set_visibility": ("visible",),
-        "set_mask_enabled": ("enabled",),
-        "set_mask_background": ("background",),
-        "set_geometry_mask": ("parameters",),
-        "add_anchor_point": (),
-        "add_color_selection": (),
-        "add_compare_mask": (),
-        "add_levels": (),
-        "texture_stack_select": ("stack",),
-        "texture_channel_add": ("channel", "format"),
-        "texture_channel_remove": ("channel",),
-        "texture_channel_edit": ("channel", "format"),
-        "texture_set_resolution": ("resolution",),
-        "project_open": ("path",),
-        "project_save": (),
-        "project_save_as": ("path",),
-        "project_save_copy": ("path",),
-        "project_reload_mesh": ("path",),
-        "display_environment": ("resource",),
-        "display_color_lut": ("resource",),
-        "display_tone_mapping": ("mode",),
-        "resource_import_project": ("path", "usage"),
-        "resource_search": ("query",),
-        "resource_project_list": (),
-        "bake_start": (),
-        "bake_highpoly": ("path",),
-        "export_mesh": ("path",),
-        "save_smart_material": ("path", "name"),
-        "save_smart_mask": ("path", "name"),
-        "set_opacity": ("opacity",),
-        "set_active_channels": ("channels",),
-        "set_projection_mode": ("mode",),
-        "set_projection_scale": ("scale",),
-        "set_fill_property": ("property", "value"),
-        "set_fill_channel": ("channel", "value"),
-        "set_source_parameters": ("parameters",),
-        "set_effect_parameters": ("parameters",),
-        "add_generator": ("name",),
-        "add_filter": ("name",),
-        "add_smart_mask": ("name",),
-        "add_smart_material": ("name",),
-        "set_fill_material": ("name",),
-        "rename_selected": ("name",),
-        "export_textures": ("export_path",),
-        "apply_base_material": (),
-        "auto_material_workflow": (),
-        "ensure_texture_set_ready": (),
-        "ensure_material_layer": (),
-    }
+    # 必填参数一律来自 Tool Registry（架构文档 §12 单一事实源）。
+    required = required_params()
+    # 跨域守卫（架构文档 §13）：烘焙 / 导出属于独占执行域，必须显式声明。
+    try:
+        plan["operation_domain"] = check_plan_domains(actions, declared)
+    except ToolContractError as exc:
+        raise ActionError(str(exc)) from exc
+
     for index, action in enumerate(actions, 1):
         if not isinstance(action, dict):
             raise ActionError(f"第 {index} 个动作必须是对象。")
@@ -390,6 +302,9 @@ def validate_plan(plan: dict) -> dict:
             action["action"] = kind
         if kind not in SUPPORTED_ACTIONS:
             raise ActionError(f"第 {index} 个动作不允许执行: {kind}")
+        # 语义化单通道工具（set_base_color 等）同时接受 color 写法，统一成 value。
+        if "value" not in action and "color" in action:
+            action["value"] = action["color"]
         for field in required.get(kind, ()):
             if field not in action:
                 raise ActionError(f"第 {index} 个 {kind} 缺少参数: {field}")
@@ -418,8 +333,25 @@ def validate_plan(plan: dict) -> dict:
     return plan
 
 
-def execute_plan(plan: dict) -> dict:
-    plan = validate_plan(plan)
+def _painter_snapshot() -> dict:
+    """取一次 Painter 状态快照，供 §18.1 API 校验使用。
+
+    快照不可得时返回空字典——校验器会把读不到的字段标为 skipped，
+    而不会把「读不到」伪装成「已验证」。
+    """
+    try:
+        from core.painter_context import snapshot
+        return snapshot()
+    except Exception:
+        return {}
+
+
+def execute_plan(plan: dict, verify: bool = True,
+                 operation_domain: str | None = None) -> dict:
+    plan = validate_plan(plan, operation_domain)
+    actions = plan["actions"]
+
+    before_snapshot = _painter_snapshot() if verify else {}
 
     created = []
     results = []
@@ -431,7 +363,9 @@ def execute_plan(plan: dict) -> dict:
             raise ActionError("当前 Texture Set 没有选中的节点。")
         return list(nodes)
 
-    with sp.layerstack.ScopedModification("SP AI Assistant"):
+    # §16：批量提交走适配层；官方 ScopedModification 缺失时会退化为
+    # 空上下文（scope 标记 degraded），而不是让整批动作直接失败。
+    with API.scoped_modification("SP AI Assistant") as scope:
         for index, action in enumerate(plan["actions"]):
             if not isinstance(action, dict):
                 raise ActionError(f"第 {index + 1} 个动作不是对象。")
@@ -550,7 +484,7 @@ def execute_plan(plan: dict) -> dict:
                     channel = None
                 source_mode = getattr(node, "source_mode", None)
                 if channel is not None and source_mode is not None:
-                    node.set_source(channel, _channel_source_value(channel_name, value))
+                    API.set_source(node, channel, _channel_source_value(channel_name, value))
                     results.append({"action": kind, "target": node.get_name(), "property": property_name,
                                     "channel": channel_name, "value": value,
                                     "source_mode": getattr(source_mode, "name", str(source_mode)),
@@ -573,9 +507,28 @@ def execute_plan(plan: dict) -> dict:
                 channel_arg = channel if getattr(node, "source_mode", None) is not None else None
                 value = action.get("value")
                 source_value = _channel_source_value(str(action["channel"]), value)
-                node.set_source(channel_arg, source_value)
+                API.set_source(node, channel_arg, source_value)
                 results.append({"action": kind, "target": node.get_name(), "channel": str(action["channel"]),
                                 "value": value, "api": "substance_painter.layerstack.FillLayerNode.set_source"})
+
+            elif kind in {"set_base_color", "set_roughness", "set_metallic", "set_height"}:
+                # §28 点名的核心单通道写入。目标通道来自 Tool Registry 的
+                # channel 声明，避免在这里再维护一份「工具名 → 通道」的映射。
+                node = created[-1] if created else selected_nodes()[0]
+                if not isinstance(node, (sp.layerstack.FillLayerNode, sp.layerstack.FillEffectNode)):
+                    raise ActionError(f"{kind} 只能作用于 Fill Layer/Fill Effect。")
+                channel_name = get_tool(kind).channel
+                channel = getattr(sp.textureset.ChannelType, channel_name)
+                channel_arg = channel if getattr(node, "source_mode", None) is not None else None
+                value = action.get("value")
+                API.set_source(node, channel_arg, _channel_source_value(channel_name, value))
+                results.append({
+                    "action": kind,
+                    "target": node.get_name(),
+                    "channel": channel_name,
+                    "value": value,
+                    "api": "substance_painter.layerstack.FillLayerNode.set_source",
+                })
 
             elif kind == "set_source_parameters":
                 node = created[-1] if created else selected_nodes()[0]
@@ -744,7 +697,7 @@ def execute_plan(plan: dict) -> dict:
             elif kind == "set_uniform_color":
                 node = created[-1] if created else selected_nodes()[0]
                 channel = getattr(sp.textureset.ChannelType, str(action["channel"]))
-                node.set_source(channel, _parse_color(action["color"]))
+                API.set_source(node, channel, _parse_color(action["color"]))
                 results.append({"action": kind, "target": node.get_name(), "channel": str(action["channel"]), "color": action["color"]})
 
             elif kind == "set_source_resource":
@@ -754,7 +707,7 @@ def execute_plan(plan: dict) -> dict:
                 if not matches:
                     raise ActionError("找不到资源: " + str(action["resource"]))
                 resource = matches[0]
-                node.set_source(channel, resource.identifier())
+                API.set_source(node, channel, resource.identifier())
                 results.append({"action": kind, "target": node.get_name(), "channel": str(action["channel"]), "resource": resource.gui_name()})
 
             elif kind == "set_source_preset":
@@ -807,8 +760,12 @@ def execute_plan(plan: dict) -> dict:
                 params = action["parameters"]
                 if not isinstance(params, dict):
                     raise ActionError("geometry mask parameters 必须是对象。")
-                node.set_geometry_mask(**params)
-                results.append({"action": kind, "target": node.get_name(), "parameters": params})
+                # §14/§25：官方没有 set_geometry_mask，适配层拆成
+                # set_geometry_mask_type / _enabled_meshes / _enabled_uv_tiles
+                applied = API.set_geometry_mask(node, params)
+                results.append({"action": kind, "target": node.get_name(),
+                                "parameters": applied["parameters"],
+                                "applied": applied["applied"]})
 
             elif kind in {"add_anchor_point", "add_color_selection", "add_compare_mask", "add_levels"}:
                 node = created[-1] if created else selected_nodes()[0]
@@ -901,8 +858,9 @@ def execute_plan(plan: dict) -> dict:
                 results.append({"action": kind, "mode": str(action["mode"])})
 
             elif kind == "resource_import_project":
-                usage = getattr(sp.resource.Usage, str(action["usage"]))
-                resource = sp.resource.import_project_resource(str(action["path"]), usage, action.get("name"), action.get("group"))
+                resource = API.import_project_resource(
+                    str(action["path"]), str(action["usage"]),
+                    str(action.get("name") or ""), str(action.get("group") or ""))
                 results.append({"action": kind, "resource": resource.gui_name()})
 
             elif kind == "resource_search":
@@ -927,32 +885,28 @@ def execute_plan(plan: dict) -> dict:
                 results.append({"action": kind, "path": str(action["path"])})
 
             elif kind == "bake_start":
+                API.require("baking.bake_selected_textures")
                 sp.baking.bake_selected_textures_async()
                 results.append({"action": kind, "status": "started"})
 
             elif kind == "export_mesh":
                 option_name = str(action.get("option") or "BaseMesh")
                 option = getattr(sp.export.MeshExportOption, option_name)
+                API.require("export.mesh")
                 result = sp.export.export_mesh(str(action["path"]), option)
                 results.append({"action": kind, "path": str(action["path"]), "option": option_name, "result": _serializable(result)})
 
             elif kind == "save_smart_material":
                 node = created[-1] if created else selected_nodes()[0]
-                if not isinstance(node, sp.layerstack.GroupLayerNode):
-                    raise ActionError("save_smart_material 需要 Group Layer。")
-                resource = sp.layerstack.create_smart_material(node, str(action["name"]))
-                path = str(action["path"])
-                sp.layerstack.export_as_smart_material(node, str(action["name"]), path)
-                results.append({"action": kind, "resource": resource.identifier().url(), "path": path})
+                saved = API.save_smart_material(
+                    node, str(action["name"]), str(action.get("path") or ""))
+                results.append({"action": kind, **saved})
 
             elif kind == "save_smart_mask":
                 node = created[-1] if created else selected_nodes()[0]
-                if not isinstance(node, sp.layerstack.GroupLayerNode):
-                    raise ActionError("save_smart_mask 需要 Group Layer。")
-                resource = sp.layerstack.create_smart_mask(node, str(action["name"]))
-                path = str(action["path"])
-                sp.layerstack.export_as_smart_mask(node, str(action["name"]), path)
-                results.append({"action": kind, "resource": resource.identifier().url(), "path": path})
+                saved = API.save_smart_mask(
+                    node, str(action["name"]), str(action.get("path") or ""))
+                results.append({"action": kind, **saved})
 
             elif kind == "export_textures":
                 export_path = str(action.get("export_path") or "").strip()
@@ -985,6 +939,7 @@ def execute_plan(plan: dict) -> dict:
                 if not export_list:
                     raise ActionError("当前配置没有可导出的贴图。")
                 try:
+                    API.require("export.textures")
                     export_result = sp.export.export_project_textures(config)
                 except Exception as exc:
                     raise ActionError(f"纹理导出失败: {exc}") from exc
@@ -1031,4 +986,23 @@ def execute_plan(plan: dict) -> dict:
             })
         except Exception as exc:
             results.append({"action": "select_last_created", "warning": str(exc)})
-    return {"success": True, "results": results}
+
+    outcome = {
+        "success": True,
+        "operation_domain": plan.get("operation_domain", "free"),
+        "results": results,
+    }
+    if not scope.get("scoped", True):
+        outcome["scope_degraded"] = True
+
+    # §18.1 API Verification：执行后立刻对照官方 API 的真实状态做一次校验。
+    # 每个动作的结果与 action 一一对应（select_last_created 的尾巴不计入）。
+    if verify and len(results) >= len(actions):
+        outcome["verification"] = _verify_plan(
+            [get_tool(action.get("action")) for action in actions],
+            actions,
+            results[:len(actions)],
+            before_snapshot,
+            _painter_snapshot(),
+        )
+    return outcome

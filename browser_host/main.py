@@ -25,9 +25,11 @@ so every entry became unusable from the second click on.
 
 Usage:
     browser_host.exe [--state-file PATH] [--start-url URL]
+                     [--render-mode default|no-dcomp|no-gpu]
 
 State file (JSON, rewritten on every change):
-    {"pid": int, "hwnd": int, "url": str, "title": str, "tabs": int}
+    {"pid": int, "hwnd": int, "url": str, "title": str, "tabs": int,
+     "version": str, "render_mode": str, "gpu_fail_streak": int}
 The plugin reads it to locate the window for embedding and to persist the
 last visited page across Painter restarts.
 
@@ -40,7 +42,6 @@ Command file (<state-file>.cmd, polled every 800 ms):
 
 from __future__ import annotations
 
-import ctypes
 import html as _html
 import json
 import os
@@ -52,25 +53,8 @@ from urllib.parse import parse_qs, quote
 from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
 from PySide6 import QtWebEngineCore, QtWebEngineWidgets
 
-def _enable_windows_dpi_awareness():
-    """Use one DPI coordinate model for the cross-process embedded HWND."""
-    if os.name != "nt":
-        return
-    try:
-        user32 = ctypes.windll.user32
-        set_ctx = getattr(user32, "SetProcessDpiAwarenessContext", None)
-        if set_ctx is not None:
-            set_ctx(ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
-            return
-    except Exception:
-        pass
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_DPI_AWARE
-    except Exception:
-        pass
-
 APP_NAME = "SP AI Browser"
-HOST_VERSION = "1.5"
+HOST_VERSION = "1.9.2"
 STATE_DEFAULT = os.path.join(
     os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
     "SP AI Assistant", "browser_host.state",
@@ -81,6 +65,193 @@ PROFILE_ROOT = os.path.join(
 )
 MIN_ZOOM, MAX_ZOOM = 0.25, 3.0
 MAX_CLOSED_TABS = 15
+
+# Chrome-style tab group colors (HOST 1.9): a group is just a color assigned
+# to individual tabs — the tab text is painted in the group color and the tab
+# tooltip names it. Tabs keep the color when dragged around because it lives
+# on the view object, not on the tab index.
+GROUP_COLORS = {
+    "红": "#e5645a",
+    "黄": "#f2b23e",
+    "绿": "#57a773",
+    "蓝": "#5b8def",
+    "紫": "#a06bdc",
+}
+
+# ------------------------------------------------------------- GPU safety ----
+# HOST 1.7. The full-GPU compositing path (DComp on) crashes the host on some
+# GPU/driver combos (measured on RTX 50-series + 596.x: the process died with
+# 0xC0000005 / 0xC0000409 within ~20-30 s, and pure black bands appeared
+# wherever the composited WebEngine layer was not painted — the "黑色扩展边").
+#
+# HOST 1.9.1. The opposite extreme — the old starting rung "no-gpu" — has its
+# own fatal defect, reproduced and event-logged (WER APPCRASH, c0000005 in
+# QtWebEngineCore.dll): opening ANY popup menu (⋮ menu or tab context menu)
+# kills the host while Chromium runs with --disable-gpu. One right-click and
+# the watchdog restarts the browser, which users experienced as "右键一次就
+# 还原成之前的样子". no-dcomp (GPU on, DirectComposition off) keeps menus
+# stable in the same embedded probes and stays clear of the DComp crash /
+# black-band paths, so it is the new starting rung. no-gpu remains the last
+# resort for machines where the GPU path itself is broken.
+RENDER_MODES = ("default", "no-dcomp", "no-gpu")
+RENDER_FIRST_MODE = "no-dcomp"
+RENDER_FLAGS = {
+    "default": "",
+    "no-dcomp": "--disable-direct-composition",
+    "no-gpu": "--disable-gpu --disable-direct-composition",
+}
+# A launch that dies inside this window counts as a crash-on-startup.
+RENDER_STABLE_SECONDS = 25
+# HOST 1.9.2: only an unclean exit *inside* this window is treated as a crash.
+# A host that ran longer and then vanished was killed from outside — Painter
+# exiting tears the plugin (and the host) down, the version gate retires an
+# old build, the user kills the process. Counting those as crashes escalated
+# healthy machines onto the no-gpu rung after every single Painter restart,
+# where the popup-menu crash (see HOST 1.9.1 above) then waited for them.
+RENDER_CRASH_WINDOW_SECONDS = 90
+# A mode that kept the browser alive this long is remembered as "proven", and
+# the sentinel never silently drops back above it — otherwise a machine with a
+# broken GPU path would crash/restart once after every clean session.
+RENDER_PROVEN_SECONDS = 300
+
+
+def _boot_file(state_file: str) -> str:
+    return state_file + ".boot.json"
+
+
+def _read_boot_record(state_file: str) -> dict:
+    try:
+        with open(_boot_file(state_file), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _update_boot_record(state_file: str, **fields) -> dict:
+    record = _read_boot_record(state_file)
+    record.update(fields)
+    try:
+        tmp = _boot_file(state_file) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(record, handle)
+        os.replace(tmp, _boot_file(state_file))
+    except Exception:
+        pass
+    return record
+
+
+# A GPU cache left behind by a process that crashed inside the GPU path is
+# itself a crash trigger on the next launch, so a detected crash also clears
+# these. Safe to drop: cookies, logins, history and bookmarks live elsewhere
+# (Cookies / Login Data / History / bookmarks.json).
+GPU_CACHE_DIRS = ("GPUCache", "GrShaderCache", "DawnGraphiteCache",
+                  "DawnWebGPUCache", "ShaderCache", "GraphiteDawnCache")
+
+
+def purge_gpu_caches() -> list:
+    """Neutralise the GPU/shader/Dawn caches of the persistent profile.
+
+    Implemented as a **rename** (not a delete): the caches are moved aside so
+    Chromium rebuilds them from scratch, which is all we need, and no data is
+    destroyed. Cookies, logins, history and bookmarks live in other files and
+    are untouched.
+    """
+    moved = []
+    for name in GPU_CACHE_DIRS:
+        path = os.path.join(PROFILE_ROOT, name)
+        if not os.path.isdir(path):
+            continue
+        target = os.path.join(
+            os.path.dirname(PROFILE_ROOT),
+            "cache_stale_%s_%d" % (name, int(time.time())),
+        )
+        try:
+            os.rename(path, target)
+            moved.append(name)
+        except OSError:
+            pass
+    return moved
+
+
+def _more_conservative(first: str, second: str) -> str:
+    """Return whichever of the two modes sits further down RENDER_MODES."""
+    ranks = [RENDER_MODES.index(m) for m in (first, second) if m in RENDER_MODES]
+    return RENDER_MODES[max(ranks)] if ranks else ""
+
+
+def prepare_render_mode(state_file: str, forced: str = "") -> tuple:
+    """Resolve the Chromium flags for this launch and arm the crash sentinel.
+
+    Returns (mode, fail_streak). Rules:
+      * the starting rung is RENDER_FIRST_MODE (software rendering, the only
+        configuration with zero observed crashes);
+      * an unclean exit bumps the escalation one rung further, a clean exit
+        lowers it again;
+      * a mode that kept the browser alive for RENDER_PROVEN_SECONDS is
+        remembered as "proven" and never dropped back above automatically.
+    ``forced`` (from --render-mode) only moves the starting rung: a forced
+    mode that keeps crashing still escalates.
+    """
+    previous = _read_boot_record(state_file)
+    streak = 0
+    proven = ""
+    if previous:
+        # HOST 1.9.1: a boot record written by a different host build carries
+        # proven/streak state that no longer applies (e.g. a machine proven on
+        # the old no-gpu first rung must be re-evaluated on no-dcomp, or the
+        # version gate would keep it pinned to a mode with the menu crash).
+        if str(previous.get("host_version") or "") != HOST_VERSION:
+            previous = {}
+    if previous:
+        prev_streak = int(previous.get("fail_streak") or 0)
+        started = float(previous.get("started") or 0)
+        clean = bool(previous.get("clean"))
+        elapsed = (time.time() - started) if started > 0 else 0.0
+        proven = str(previous.get("proven_mode") or "")
+        if elapsed >= RENDER_PROVEN_SECONDS:
+            proven = _more_conservative(proven, str(previous.get("mode") or ""))
+        if clean:
+            streak = max(0, prev_streak - 1)
+        elif elapsed >= RENDER_CRASH_WINDOW_SECONDS:
+            # HOST 1.9.2: an unclean exit after a long life is an outside
+            # kill (Painter close / retirement / user), not a GPU crash.
+            # Resetting instead of escalating keeps the machine on its
+            # working rung — 0.6.7 shipped without this and pinned users to
+            # the menu-crashing no-gpu mode after one Painter restart.
+            streak = 0
+        else:
+            streak = prev_streak + 1
+
+    base = forced if forced in RENDER_MODES else RENDER_FIRST_MODE
+    index = min(RENDER_MODES.index(base) + streak, len(RENDER_MODES) - 1)
+    if proven in RENDER_MODES:
+        index = max(index, RENDER_MODES.index(proven))
+    mode = RENDER_MODES[index]
+    purged = purge_gpu_caches() if streak else []
+    _update_boot_record(state_file, started=time.time(), clean=False,
+                        fail_streak=streak, mode=mode, proven_mode=proven,
+                        host_version=HOST_VERSION, purged_caches=purged)
+    return mode, streak
+
+
+def apply_render_flags(mode: str) -> str:
+    """Put the Chromium flags in place *before* QApplication is constructed."""
+    flags = RENDER_FLAGS.get(mode, "")
+    if not flags:
+        return ""
+    existing = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
+    merged = existing
+    for flag in flags.split():
+        if flag not in merged:
+            merged = (merged + " " + flag).strip()
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = merged
+    return merged
+
+
+def mark_clean_exit(state_file: str):
+    """Called on a normal quit so the sentinel does not read it as a crash."""
+    _update_boot_record(state_file, clean=True)
 
 # Search engines (Viper/Arora-style switcher, persisted in settings)
 SEARCH_ENGINES = {
@@ -375,13 +546,27 @@ class DetachedWindow(QtWidgets.QMainWindow):
 
 
 class BrowserWindow(QtWidgets.QMainWindow):
-    def __init__(self, state_file: str, start_url: str = "", embedded: bool = False):
+    def __init__(self, state_file: str, start_url: str = "",
+                 render_mode: str = "default", gpu_fail_streak: int = 0,
+                 embedded: bool = False):
         super().__init__()
-        self._embedded_mode = bool(embedded)
-        # Create the window frameless from the start when it will be
-        # reparented into Painter. Removing WS_CAPTION after QMainWindow
-        # creation can leave stale Qt frame/client metrics and create the
-        # exact right/bottom black bands seen in the dock.
+        # HOST 1.8 — the *real* fix for the right/bottom black bands.
+        #
+        # The plugin reparents this window into Painter and strips
+        # WS_CAPTION / WS_THICKFRAME with SetWindowLongPtrW. Win32 accepts
+        # that (GetWindowRect == GetClientRect afterwards), but Qt has
+        # already cached the frame margins from the moment the window was
+        # created and does NOT recompute them when an outside process edits
+        # the style bits. The layout therefore keeps reserving the old
+        # caption/border space: measured 16 px on the right and 39 px at the
+        # bottom (8+8 and 31+8) of an otherwise perfectly aligned 900x760
+        # window, painted with the window background — the user-visible
+        # black bands.
+        #
+        # Creating the window frameless from the start means Qt's frame
+        # margins are zero from the beginning, so there is nothing stale to
+        # leak. Must happen before the first show(); a standalone run keeps
+        # its normal frame.
         if embedded:
             self.setWindowFlags(
                 QtCore.Qt.WindowType.FramelessWindowHint |
@@ -390,6 +575,13 @@ class BrowserWindow(QtWidgets.QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.resize(460, 860)
         self._state_file = state_file
+        # HOST 1.7 render diagnostics: which Chromium GPU flags this process
+        # runs with, and how many boots in a row died early (see the crash
+        # sentinel above). Reported in the state file so the plugin / logs can
+        # tell "black bands because the GPU path is broken" apart from a real
+        # layout bug.
+        self._render_mode = render_mode
+        self._gpu_fail_streak = int(gpu_fail_streak or 0)
         self.setStyleSheet(_STYLESHEET)
         self._settings = QtCore.QSettings("taro588", "SP AI Browser")
         self._zoom = float(self._settings.value("browser/zoom", 1.0, float))
@@ -403,12 +595,14 @@ class BrowserWindow(QtWidgets.QMainWindow):
         self._downloads: list[dict] = []
         self._history: list[dict] = []
         self._bookmarks: list[dict] = []
+        self._readlist: list[dict] = []
         self._devtools: list = []
         self._detached: list = []
         self._last_real_url = ""
         self._chrome_hidden = False
         self._load_history()
         self._load_bookmarks()
+        self._load_readlist()
 
         # --- persistent profile (cookies / logins survive restarts) ---
         os.makedirs(PROFILE_ROOT, exist_ok=True)
@@ -432,8 +626,30 @@ class BrowserWindow(QtWidgets.QMainWindow):
         self.private_profile.setHttpUserAgent(USER_AGENTS[self._ua_name])
 
         central = QtWidgets.QWidget()
-        root = QtWidgets.QVBoxLayout(central)
-        # Embedded mode must have no QMainWindow/central margins; the Win32\n        # child is resized to this exact client rectangle by host_embed.\n        root.setContentsMargins(0, 0, 0, 0)\n        root.setSpacing(0)
+        # HOST 1.9: vertical-tabs side panel. The old single VBox is now the
+        # "body" column inside an HBox so the tab strip can live on the left
+        # (Edge-style) without touching the chrome/page layout itself.
+        outer = QtWidgets.QHBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self._side_panel = QtWidgets.QWidget()
+        self._side_panel.setObjectName("SPAI_SideTabs")
+        self._side_panel.setStyleSheet(
+            "QWidget#SPAI_SideTabs { background:#111318; border-right:1px solid #262a31; }")
+        self._side_lay = QtWidgets.QVBoxLayout(self._side_panel)
+        self._side_lay.setContentsMargins(4, 6, 4, 6)
+        self._side_lay.setSpacing(4)
+        self._side_lay.addStretch(1)
+        self._side_panel.hide()
+        outer.addWidget(self._side_panel)
+        body = QtWidgets.QWidget()
+        outer.addWidget(body, 1)
+        root = QtWidgets.QVBoxLayout(body)
+        # BLACK-EDGE FIX (HOST 1.6): the old margins(6,6,6,0) left a permanent
+        # dark frame around the chrome AND the page (users saw it as "黑色扩展
+        # 边" on the right side, wider at high DPI). Flush edges, zero gap.
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
         self.setCentralWidget(central)
 
         # --- chrome: tab strip + nav share one unified background (Chrome-like) ---
@@ -464,6 +680,7 @@ class BrowserWindow(QtWidgets.QMainWindow):
         plus.setToolTip("新标签页 (Ctrl+T)")
         plus.clicked.connect(lambda: self.new_tab())
         strip.addWidget(plus)
+        self._plus_btn = plus  # HOST 1.9: moved between strip and side panel
         strip.addStretch(1)
         self._strip_widget = QtWidgets.QWidget()
         self._strip_widget.setLayout(strip)
@@ -547,7 +764,30 @@ class BrowserWindow(QtWidgets.QMainWindow):
         self.stack = QtWidgets.QStackedWidget()
         root.addWidget(self.stack, 1)
 
-        # A status bar leaves a permanent bottom strip when this QMainWindow\n        # is reparented into Painter. Keep status messages in the browser UI instead.\n        self.statusBar().hide()\n        self._zoom_label = None
+        # HOST 1.9: split view ("使用当前标签页创建新的拆分视图"). An overlay
+        # pane (mini address bar + a second WebTab) covers the right half of
+        # the page area while the stack's right contents margin shrinks so the
+        # main view reflows into the left half. No tab-index bookkeeping is
+        # touched: the pane is a WebTab that is simply not in the stack, and
+        # every signal handler already guards with stack.indexOf() >= 0.
+        self._split = None
+        self.stack.installEventFilter(self)
+        self._vertical_tabs = bool(
+            self._settings.value("browser/vertical_tabs", False, bool))
+
+        # BLACK-EDGE FIX (HOST 1.6): creating the docked QStatusBar made it a
+        # permanent ~22px dark band docked at the bottom of the embedded view
+        # (the bottom "黑色扩展边"), and toggling its visibility for transient
+        # messages re-layouts the WebEngine view on every loading tick.
+        # Status / link-hover messages use a Chrome-style floating overlay.
+        self._link_hover_active = False
+        self._status_overlay = QtWidgets.QLabel(self.stack)
+        self._status_overlay.setObjectName("SPAI_StatusOverlay")
+        self._status_overlay.setStyleSheet(
+            "QLabel#SPAI_StatusOverlay { background:#1b1e24; color:#9aa1ad;"
+            " border:1px solid #30343b; border-radius:6px; padding:3px 10px; }")
+        self._status_overlay.hide()
+        self._zoom_label = None
         self._find_was_visible = False
 
         for seq, slot in (
@@ -580,12 +820,19 @@ class BrowserWindow(QtWidgets.QMainWindow):
             QtGui.QShortcut(QtGui.QKeySequence(seq), self, activated=slot)
 
         self._restore_or_start(start_url)
+        self._apply_tab_orientation()
         self._write_state()
 
         # command channel: the plugin writes a URL (or "exit") into
         # <state-file>.cmd; we poll it and react. Cheap and robust.
         self._cmd_file = state_file + ".cmd"
-        self._cmd_mtime = 0.0
+        # A stale command left over from the previous session must NOT be
+        # replayed on this launch (a leftover "exit" would kill the browser
+        # seconds after it starts): treat whatever is already there as seen.
+        try:
+            self._cmd_mtime = os.path.getmtime(self._cmd_file)
+        except OSError:
+            self._cmd_mtime = 0.0
         self._cmd_timer = QtCore.QTimer(self)
         self._cmd_timer.timeout.connect(self._poll_command)
         self._cmd_timer.start(800)
@@ -647,8 +894,15 @@ class BrowserWindow(QtWidgets.QMainWindow):
                        lambda: self.show_internal(QtCore.QUrl("spai://bookmarks")))
         menu.addAction("历史记录 (Ctrl+H)",
                        lambda: self.show_internal(QtCore.QUrl("spai://history")))
+        menu.addAction("阅读清单",
+                       lambda: self.show_internal(QtCore.QUrl("spai://readlist")))
         menu.addAction("下载 (Ctrl+J)",
                        lambda: self.show_internal(QtCore.QUrl("spai://downloads")))
+        menu.addSeparator()
+        menu.addAction("垂直显示标签页" if not self._vertical_tabs
+                       else "水平显示标签页", self._toggle_vertical_tabs)
+        menu.addAction("使用当前标签页创建新的拆分视图" if not self._split
+                       else "关闭拆分视图", self._toggle_split_current)
         menu.addSeparator()
         menu.addAction("查看页面源码 (Ctrl+U)", self._view_source)
         menu.addAction("开发者工具 / 检查元素 (Ctrl+Shift+I)", self._open_devtools)
@@ -713,7 +967,9 @@ class BrowserWindow(QtWidgets.QMainWindow):
             "%s %s\n\n基于 Qt WebEngine (Chromium) 的内置浏览器。\n"
             "标签页 / 书签 / 会话恢复参考 Falkon，用户代理与内容控制参考 "
             "Viper Browser，\n开发者工具与搜索引擎切换参考 Arora / qutebrowser。\n\n"
-            "配置文件目录：\n%s" % (APP_NAME, HOST_VERSION, PROFILE_ROOT))
+            "渲染模式：%s（GPU 合成回退，防止黑边与启动崩溃）\n"
+            "配置文件目录：\n%s"
+            % (APP_NAME, HOST_VERSION, self._render_mode, PROFILE_ROOT))
 
     def _restore_focus(self):
         """Keyboard/mouse focus after a native dialog or menu — without this
@@ -742,6 +998,13 @@ class BrowserWindow(QtWidgets.QMainWindow):
                     and event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier):
                 self._find(backward=True)
                 return True
+        # HOST 1.9: during __init__ the find edit fires events before the
+        # stack exists, so the attribute must be guarded here.
+        stack = getattr(self, "stack", None)
+        if stack is not None and obj is stack \
+                and event.type() == QtCore.QEvent.Type.Resize:
+            # keep the split pane glued to the right half of the page area
+            self._layout_split()
         return super().eventFilter(obj, event)
 
     def _toggle_find(self):
@@ -801,7 +1064,7 @@ class BrowserWindow(QtWidgets.QMainWindow):
         else:
             self.find_bar.setVisible(bool(getattr(self, "_find_was_visible", False)))
         self._chrome_widget.setVisible(not self._chrome_hidden)
-        self.statusBar().setVisible(not self._chrome_hidden)
+        self.status("已退出全屏显示 (F11)" if not self._chrome_hidden else "全屏显示中，按 F11 退出")
         self.status("已退出全屏显示 (F11)" if not self._chrome_hidden else "全屏显示中，按 F11 退出")
 
     # ------------------------------------------------- print / screenshot ---
@@ -1093,6 +1356,24 @@ class BrowserWindow(QtWidgets.QMainWindow):
                     self.new_tab(self._bookmarks[idx]["url"])
                     return
             body = self._bookmarks_html()
+        elif host == "readlist":
+            # HOST 1.9: reading list — add via tab context menu
+            if path.startswith("/remove/"):
+                idx = self._path_index(path)
+                if idx is not None and 0 <= idx < len(self._readlist):
+                    self._readlist.pop(idx)
+                    self._save_readlist()
+            elif path.startswith("/read/"):
+                idx = self._path_index(path)
+                if idx is not None and 0 <= idx < len(self._readlist):
+                    self._readlist[idx]["read"] = not self._readlist[idx].get("read")
+                    self._save_readlist()
+            elif path.startswith("/opentab/"):
+                idx = self._path_index(path)
+                if idx is not None and 0 <= idx < len(self._readlist):
+                    self.new_tab(self._readlist[idx]["url"])
+                    return
+            body = self._readlist_html()
         elif host == "downloads":
             idx = self._path_index(path)
             if path.startswith("/open/") and idx is not None:
@@ -1453,6 +1734,34 @@ class BrowserWindow(QtWidgets.QMainWindow):
             view = self.stack.widget(index)
             pinned = bool(getattr(view, "spai_pinned", False))
             muted = bool(getattr(view, "spai_muted", False))
+            group = getattr(view, "spai_group", "") or ""
+            # --- HOST 1.9: Chrome-style additions ---
+            menu.addAction(
+                "关闭拆分视图" if self._split else "使用当前标签页创建新的拆分视图",
+                self._toggle_split_current)
+            group_menu = menu.addMenu("向新分组添加标签页")
+            for gname, ghex in GROUP_COLORS.items():
+                act = group_menu.addAction("● " + gname)
+                act.triggered.connect(
+                    lambda _c=False, i=index, n=gname: self._set_tab_group(i, n))
+            if group:
+                out = group_menu.addAction("移出分组")
+                out.triggered.connect(
+                    lambda _c=False, i=index: self._set_tab_group(i, ""))
+            rl = menu.addAction("向阅读清单中添加 1 个标签页",
+                                lambda v=view: self._add_to_readlist(
+                                    v.title(), v.url().toString()))
+            rl.setEnabled(bool(view.url().toString())
+                          and not view.url().toString().startswith(
+                              ("about:", "spai:", "data:")))
+        else:
+            view = None
+            menu.addAction("新标签页", lambda: self.new_tab())
+            menu.addAction("新建无痕标签页", lambda: self.new_tab(private=True))
+        menu.addSeparator()
+        menu.addAction("垂直显示标签页" if not self._vertical_tabs
+                       else "水平显示标签页", self._toggle_vertical_tabs)
+        if index >= 0:
             menu.addAction("在右侧新建标签页", lambda: self.new_tab_to_right())
             menu.addAction("复制", lambda v=view: self.new_tab(v.url().toString()))
             menu.addAction("将标签页移至新窗口", lambda i=index: self._detach_tab(i))
@@ -1479,9 +1788,6 @@ class BrowserWindow(QtWidgets.QMainWindow):
             menu.addAction("关闭其他标签页", lambda: self._close_others(index))
             menu.addAction("关闭右侧标签页", lambda: self._close_to_right(index))
             menu.addAction("关闭左侧标签页", lambda: self._close_to_left(index))
-        else:
-            menu.addAction("新标签页", lambda: self.new_tab())
-            menu.addAction("新建无痕标签页", lambda: self.new_tab(private=True))
         menu.addSeparator()
         reopen = menu.addAction("重新打开已关闭的标签页", self._reopen_closed)
         reopen.setEnabled(bool(self._closed_tabs))
@@ -1494,6 +1800,203 @@ class BrowserWindow(QtWidgets.QMainWindow):
         if text:
             QtWidgets.QApplication.clipboard().setText(text)
             self.status(message)
+
+    # ------------------------------------------------- split view (HOST 1.9) ---
+
+    def _toggle_split_current(self):
+        if self._split:
+            self._close_split()
+            return
+        src = self.current_view()
+        if src is None:
+            return
+        profile = self.private_profile if getattr(src, "spai_private", False) else self.profile
+        pane = WebTab(profile, self, private=getattr(src, "spai_private", False))
+        pane.setZoomFactor(self._zoom)
+        url = src.url().toString()
+        if not url or url.startswith(("about:", "spai:", "data:")):
+            pane.setHtml(self._newtab_html(), QtCore.QUrl("about:blank"))
+        else:
+            pane.setUrl(QtCore.QUrl(url))
+
+        bar = QtWidgets.QWidget()
+        bl = QtWidgets.QHBoxLayout(bar)
+        bl.setContentsMargins(6, 4, 6, 4)
+        bl.setSpacing(4)
+        addr = QtWidgets.QLineEdit()
+        addr.setPlaceholderText("拆分视图 — 搜索或输入网址")
+        addr.setFixedHeight(26)
+        addr.setText("" if url in ("", "about:blank") else url)
+        addr.returnPressed.connect(
+            lambda: pane.setUrl(QtCore.QUrl(_normalize(addr.text(), self._engine))))
+        pane.urlChanged.connect(lambda u: addr.setText(
+            "" if u.toString() == "about:blank" else u.toString()))
+        bl.addWidget(addr, 1)
+        close = QtWidgets.QToolButton()
+        close.setText("✕")
+        close.setToolTip("关闭拆分视图")
+        close.setFixedSize(24, 24)
+        close.clicked.connect(self._close_split)
+        bl.addWidget(close)
+
+        container = QtWidgets.QWidget(self)
+        container.setObjectName("SPAI_SplitPane")
+        container.setStyleSheet(
+            "QWidget#SPAI_SplitPane { background:#181a1f; border-left:1px solid #30343b; }")
+        cl = QtWidgets.QVBoxLayout(container)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(0)
+        cl.addWidget(bar)
+        cl.addWidget(pane, 1)
+        self._split = {"source": src, "pane": pane, "container": container}
+        container.show()
+        pane.show()
+        self._layout_split()
+        self.status("已创建拆分视图（左右各 50%）")
+
+    def _close_split(self):
+        split = self._split
+        if not split:
+            return
+        self._split = None
+        container = split["container"]
+        pane = split["pane"]
+        container.hide()
+        container.deleteLater()
+        pane.deleteLater()
+        self.stack.setContentsMargins(0, 0, 0, 0)
+        self.status("已关闭拆分视图")
+
+    def _layout_split(self):
+        split = self._split
+        if not split:
+            return
+        container = split.get("container")
+        if container is None or self._split.get("source") is None:
+            return
+        src = self._split["source"]
+        # the source tab may have been closed / detached meanwhile
+        if self.stack.indexOf(src) < 0:
+            self._close_split()
+            return
+        geo = self.stack.geometry()  # relative to its parent (the body column)
+        half = max(120, geo.width() // 2)
+        # shrink the stacked web views into the LEFT half (the page reflows),
+        # then cover the right half with the split pane. The pane lives on the
+        # stack's parent so stack-relative geometry maps 1:1.
+        self.stack.setContentsMargins(0, 0, half, 0)
+        container.setParent(self.stack.parentWidget())
+        container.setGeometry(geo.x() + geo.width() - half, geo.y(),
+                              half, geo.height())
+        container.raise_()
+
+    # ---------------------------------------------- tab groups (HOST 1.9) ---
+
+    def _set_tab_group(self, index: int, name: str):
+        view = self.stack.widget(index)
+        if view is None:
+            return
+        view.spai_group = name or ""
+        self._update_tab_label(index)
+        if name:
+            self.status("已加入%s色分组" % name)
+        else:
+            self.status("已移出分组")
+
+    # --------------------------------------------- reading list (HOST 1.9) ---
+
+    def _readlist_path(self) -> str:
+        return os.path.join(PROFILE_ROOT, "readlist.json")
+
+    def _load_readlist(self):
+        try:
+            with open(self._readlist_path(), "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            self._readlist = [b for b in data if isinstance(b, dict) and b.get("url")]
+        except (OSError, ValueError):
+            self._readlist = []
+
+    def _save_readlist(self):
+        try:
+            with open(self._readlist_path(), "w", encoding="utf-8") as handle:
+                json.dump(self._readlist[:500], handle, ensure_ascii=False)
+        except OSError:
+            pass
+
+    def _add_to_readlist(self, title: str, url: str):
+        url = (url or "").strip()
+        if not url or url.startswith(("about:", "spai:", "data:")):
+            self.status("此页面无法加入阅读清单")
+            return
+        base = url.split("#", 1)[0]
+        if any(item["url"].split("#", 1)[0] == base for item in self._readlist):
+            self.status("已在阅读清单中")
+            return
+        self._readlist.insert(0, {"title": title or url, "url": url,
+                                  "time": _now(), "read": False})
+        self._save_readlist()
+        self.status("已加入阅读清单：" + _short(title or url, 30))
+
+    def _readlist_html(self) -> str:
+        rows = []
+        for idx, item in enumerate(self._readlist):
+            done = '<div class="t">已读</div>' if item.get("read") else ""
+            rows.append(
+                '<div class="row"><a href="%s">%s</a><div class="u">%s</div>'
+                '<div class="t">%s</div>%s'
+                '<div class="acts"><a href="spai://readlist/read/%d">%s</a>'
+                '<a href="spai://readlist/remove/%d">移除</a></div></div>'
+                % (_html.escape(item["url"], quote=True),
+                   _html.escape(item.get("title") or item["url"]),
+                   _html.escape(item["url"]), _html.escape(item.get("time", "")),
+                   done, idx, "标记未读" if item.get("read") else "标记已读", idx))
+        body = "".join(rows) or '<div class="empty">阅读清单是空的 · 右键标签页即可添加</div>'
+        return ('<!doctype html><html><head><meta charset="utf-8"><style>%s'
+                '</style></head><body><h2>阅读清单</h2>%s</body></html>'
+                % (_INTERNAL_CSS, body))
+
+    # --------------------------------------- vertical tabs (HOST 1.9) ---
+
+    def _toggle_vertical_tabs(self):
+        self._vertical_tabs = not self._vertical_tabs
+        self._apply_tab_orientation()
+        self.status("已切换为垂直标签页" if self._vertical_tabs
+                    else "已切换为水平标签页")
+
+    def _apply_tab_orientation(self):
+        strip_lay = self._strip_widget.layout()
+        if self._vertical_tabs:
+            strip_lay.removeWidget(self.tab_bar)
+            strip_lay.removeWidget(self._plus_btn)
+            # order inside the side panel: [tabs, +, stretch]
+            self._side_lay.insertWidget(0, self.tab_bar)
+            self._side_lay.insertWidget(1, self._plus_btn)
+            self._plus_btn.setFixedSize(60, 28)
+            self.tab_bar.setShape(QtWidgets.QTabBar.Shape.RoundedWest)
+            self.tab_bar.setExpanding(True)
+            self._side_panel.setFixedWidth(76)
+            self._side_panel.show()
+            self._strip_widget.hide()
+        else:
+            while self._side_lay.count():
+                item = self._side_lay.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.setParent(None)
+            self._side_lay.addStretch(1)
+            self.tab_bar.setShape(QtWidgets.QTabBar.Shape.RoundedNorth)
+            self.tab_bar.setExpanding(False)
+            strip_lay.insertWidget(0, self.tab_bar)
+            strip_lay.insertWidget(1, self._plus_btn)
+            self._plus_btn.setMinimumSize(0, 0)
+            self._plus_btn.setMaximumSize(16777215, 16777215)
+            self._strip_widget.show()
+            self._side_panel.hide()
+        self._settings.setValue("browser/vertical_tabs", self._vertical_tabs)
+        # HOST 1.9.1: flush immediately — a hard crash right after the toggle
+        # must not roll the orientation back (the "还原成之前的样子" report).
+        self._settings.sync()
+        self._refresh_tab_buttons()
 
     def _view_source_of(self, view):
         url = view.url().toString() if view else ""
@@ -1527,6 +2030,15 @@ class BrowserWindow(QtWidgets.QMainWindow):
         if getattr(view, "spai_muted", False):
             prefix += "🔇 "
         self.tab_bar.setTabText(index, prefix + title[:22])
+        # HOST 1.9: grouped tabs are painted in their group color
+        color = GROUP_COLORS.get(getattr(view, "spai_group", "") or "")
+        if color:
+            self.tab_bar.setTabTextColor(index, QtGui.QColor(color))
+            self.tab_bar.setTabToolTip(index, "%s色分组 · %s" % (view.spai_group, title))
+        else:
+            self.tab_bar.setTabTextColor(
+                index, QtGui.QColor("#c8cdd6"))
+            self.tab_bar.setTabToolTip(index, title)
 
     def _toggle_pin(self, index: int):
         view = self.stack.widget(index)
@@ -1632,6 +2144,8 @@ class BrowserWindow(QtWidgets.QMainWindow):
         view = self.stack.widget(index)
         if view is None:
             return
+        if self._split is not None and view is self._split.get("source"):
+            self._close_split()
         button = self.tab_bar.tabButton(index, QtWidgets.QTabBar.ButtonPosition.RightSide)
         if button is not None:
             button.deleteLater()
@@ -1701,6 +2215,10 @@ class BrowserWindow(QtWidgets.QMainWindow):
         if index < 0 or index >= self.tab_bar.count():
             return
         view = self.stack.widget(index)
+        # HOST 1.9: closing the tab that anchors the split view tears it down
+        if self._split is not None and view is not None \
+                and view is self._split.get("source"):
+            self._close_split()
         close_btn = self.tab_bar.tabButton(index, QtWidgets.QTabBar.ButtonPosition.RightSide)
         if close_btn is not None:
             self.tab_bar.setTabButton(index, QtWidgets.QTabBar.ButtonPosition.RightSide, None)
@@ -1798,8 +2316,13 @@ class BrowserWindow(QtWidgets.QMainWindow):
             self.status("正在加载… %d%%" % progress)
 
     def on_link_hovered(self, url):
+        # Hover URL shows like Chrome's status bubble; hiding the overlay on
+        # unhover keeps the embedded view flush at the bottom (no dark strip).
+        self._link_hover_active = bool(url)
         if url:
-            self.statusBar().showMessage(url)
+            self._show_status_overlay(url)
+        else:
+            self._status_overlay.hide()
 
     def on_load_finished(self, ok):
         view = self.sender()
@@ -1820,7 +2343,34 @@ class BrowserWindow(QtWidgets.QMainWindow):
         self.setWindowTitle(title + " — " + APP_NAME)
 
     def status(self, message: str):
-        self.statusBar().showMessage(message, 6000)
+        """Transient status as a floating overlay at the bottom-left of the
+        page area — a docked QStatusBar would occupy permanent layout space
+        (the bottom "black edge") and its show/hide churn re-layouts the
+        WebEngine view on every loading-progress tick."""
+        self._show_status_overlay(message, 6000)
+
+    def _show_status_overlay(self, text: str, timeout: int = 0):
+        overlay = self._status_overlay
+        overlay.setText(text)
+        overlay.adjustSize()
+        self._position_status_overlay()
+        overlay.show()
+        overlay.raise_()
+        if timeout:
+            QtCore.QTimer.singleShot(timeout, self._hide_status_overlay)
+
+    def _hide_status_overlay(self):
+        if not self._link_hover_active:
+            self._status_overlay.hide()
+
+    def _position_status_overlay(self):
+        overlay = self._status_overlay
+        overlay.move(10, max(0, self.stack.height() - overlay.height() - 10))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, "_status_overlay", None) is not None and self._status_overlay.isVisible():
+            self._position_status_overlay()
 
     # --------------------------------------------------- session handling ---
 
@@ -1835,6 +2385,7 @@ class BrowserWindow(QtWidgets.QMainWindow):
                 urls.append(("!" if getattr(view, "spai_pinned", False) else "") + url)
         try:
             self._settings.setValue("browser/session", urls[:20])
+            self._settings.sync()  # HOST 1.9.1: survive hard crashes
         except Exception:
             pass
 
@@ -1867,17 +2418,27 @@ class BrowserWindow(QtWidgets.QMainWindow):
 
     def _write_state(self):
         try:
+            # HOST 1.9.2: publish only when a native window actually exists.
+            # Asking the widget for its winId would *create* a fresh platform
+            # window on a widget whose HWND was just torn down — the
+            # heartbeat then resurrected zombie windows every 4.8 s and two
+            # hosts fought over the state file (the 2026-09-30 incident).
+            hwnd = int(self.internalWinId() or 0)
+            if not hwnd:
+                return
             view = self.current_view()
             url = view.url().toString() if view else ""
             if url.startswith("spai:") or url == "about:blank":
                 url = self._last_real_url
             state = {
                 "pid": os.getpid(),
-                "hwnd": int(self.winId()),
+                "hwnd": hwnd,
                 "url": url,
                 "title": view.title() if view else "",
                 "tabs": self.tab_bar.count(),
                 "version": HOST_VERSION,
+                "render_mode": self._render_mode,
+                "gpu_fail_streak": self._gpu_fail_streak,
             }
             tmp = self._state_file + ".tmp"
             with open(tmp, "w", encoding="utf-8") as handle:
@@ -1911,6 +2472,19 @@ class BrowserWindow(QtWidgets.QMainWindow):
                 view.setUrl(QtCore.QUrl(url))
 
     def _poll_command(self):
+        # HOST 1.9.1 durability heartbeat: the crash on menu open (see the
+        # RENDER_MODES note) taught us a hard death can lose every session /
+        # setting change made since the last user action. Save periodically so
+        # a restart restores the world as it looked seconds — not minutes —
+        # before the crash.
+        self._durability_ticks = getattr(self, "_durability_ticks", 0) + 1
+        if self._durability_ticks % 6 == 0:  # ~4.8 s at the 800 ms poll
+            try:
+                self._save_session()
+                self._settings.sync()
+                self._write_state()
+            except Exception:
+                pass
         try:
             mtime = os.path.getmtime(self._cmd_file)
         except OSError:
@@ -1934,17 +2508,34 @@ class BrowserWindow(QtWidgets.QMainWindow):
             self.open_url(command[5:], new_tab=False)
         elif command == "newtab":
             self.new_tab()
+        # consume it, so the same command can never be replayed
+        try:
+            os.remove(self._cmd_file)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------- window ---
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Publish the final native HWND immediately after the window is shown.
-        # The handle can differ from the pre-show handle written during
-        # construction, so the embedding plugin must never see a stale HWND.
-        self._write_state()
         QtCore.QTimer.singleShot(300, self._write_state)
         QtCore.QTimer.singleShot(400, self._restore_focus)
+
+    def event(self, event):
+        # HOST 1.9.2: publishing the hwnd on WinIdChange.
+        #
+        # Cross-process embedding (plugin SetParent + style surgery) can make
+        # Qt tear the platform window down and build a new one — the HWND the
+        # plugin is attached to disappears, and the state file keeps
+        # advertising the dead handle until the next heartbeat (up to 4.8 s).
+        # Inside that race the plugin's 250 ms tick declared the host dead and
+        # spawned a *second* browser: two hosts, one state file, ping-ponging
+        # pids — measured live on 2026-09-30 (state pid flips 4x/12 s, two
+        # browser_host.exe children of Painter). Re-advertising immediately
+        # keeps that window under a single tick.
+        if event.type() == QtCore.QEvent.Type.WinIdChange:
+            QtCore.QTimer.singleShot(0, self._write_state)
+        return super().event(event)
 
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key.Key_Escape and self._chrome_hidden:
@@ -1968,24 +2559,40 @@ class BrowserWindow(QtWidgets.QMainWindow):
 
 
 def main():
-    _enable_windows_dpi_awareness()
     state_file = STATE_DEFAULT
     start_url = ""
-    embedded = "--embedded" in sys.argv[1:]
+    forced_mode = ""
     args = sys.argv[1:]
+    # HOST 1.8: the plugin passes --embedded because the window must be
+    # created frameless (see BrowserWindow.__init__); a standalone launch
+    # keeps its normal frame.
+    embedded = "--embedded" in args
     for i, arg in enumerate(args):
         if arg == "--state-file" and i + 1 < len(args):
             state_file = args[i + 1]
         elif arg == "--start-url" and i + 1 < len(args):
             start_url = args[i + 1]
+        elif arg == "--render-mode" and i + 1 < len(args):
+            forced_mode = args[i + 1]
+
+    os.makedirs(os.path.dirname(state_file) or ".", exist_ok=True)
+
+    # HOST 1.7: pick the GPU flags *before* QtWebEngine initialises, so a
+    # machine whose DirectComposition path is broken neither crashes on boot
+    # nor paints black bands around the embedded view.
+    render_mode, fail_streak = prepare_render_mode(state_file, forced_mode)
+    apply_render_flags(render_mode)
 
     # QtWebEngine must be initialised with these flags on some systems
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
 
-    os.makedirs(os.path.dirname(state_file), exist_ok=True)
-    window = BrowserWindow(state_file, start_url, embedded=embedded)
+    window = BrowserWindow(state_file, start_url, render_mode=render_mode,
+                           gpu_fail_streak=fail_streak, embedded=embedded)
+    # A normal quit must clear the sentinel, otherwise every restart would look
+    # like a crash and needlessly downgrade the render mode.
+    app.aboutToQuit.connect(lambda: mark_clean_exit(state_file))
     window.show()
     sys.exit(app.exec())
 

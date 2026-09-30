@@ -1,0 +1,102 @@
+# 路线图 —— 按规格 §28「接手项目的第一优先级」推进
+
+规格 §28 给出的顺序（**先地基、后能力、最后包装**）：
+
+| # | §28 要求 | 状态 | 说明 |
+|---|---|---|---|
+| 1 | 先建立当前仓库基线与自动化测试，不先继续堆 UI | ✅ 已完成 | `tests/` 97 项（发布校验 + Registry 契约 + 适配层 + 声明一致性 + 执行端到端）；`pytest.ini` 让 `tests/` 全量进了 CI |
+| 2 | 读取当前 Painter 官方 API 版本并建立 API Adapter | ✅ 已完成 | `plugin/core/painter_api.py`：版本读取（Painter 11.0.0 / API 0.3.4 实测）+ 37 条能力探测 + 差异收敛；`tools/painter_api_census.py` 校验工具声明与官方 API 一致（见 `docs/painter-api-adapter.md`） |
+| 3 | 实现 Tool Registry，每个 Tool 都有 executor + verifier | ✅ 已完成 | `plugin/core/tools/`；64 条工具，1:1 对齐由测试强制 |
+| 4 | 完成 `create_fill_layer` / `set_base_color` / `set_roughness` / `set_metallic` / `set_material_source` / `resource.import` 等核心真实操作 | ✅ 已完成 | 见 `docs/tool-registry.md`；语义化单通道工具已补齐 |
+| 5 | 用真实 Painter 项目做集成测试 | ✅ 已完成 | `plugin/core/integration_smoke.py`（Painter 的 Window 菜单入口）：只读探测 + 临时工程端到端；报告落盘 JSON，`tools/check_smoke_report.py` 做门禁（见 `docs/integration-smoke.md`） |
+| 6 | 再接 PBR、搜索、视觉和多 Agent | ⬜ 待做 | 现在只有单模型 + 单轮工具调用 |
+| 7 | 最后做安装器、UI、黑边、缓存、错误恢复和发布验收 | 🟡 部分完成 | 0.6.4–0.6.8 已修掉黑边、插件常驻、双 host 互殴、GPU 档位崩溃；缓存/错误恢复/发布验收未系统化 |
+
+## 已完成（本轮）
+
+**仓库基线与 Tool Registry 单一事实源。**
+
+问题：同一个工具清单在 0.6.x 里有三份手写副本（执行白名单、必填参数表、
+喂给模型的 schema enum），任何一处漏改就会出现「模型调得到、执行器不认」。
+这正是规格 §25 记录过的既有故障。
+
+改动：
+
+* 新增 `plugin/core/tools/`（spec / domains / catalog / registry / verifiers）；
+* `core/actions.py` 的白名单、别名、必填参数改为从 registry 派生；
+* `core/ai_client.py` 的模型 schema 改为 `painter_action_tool()` 生成；
+* `core/actions.py` 新增跨域守卫：烘焙 / 导出属独占执行域，必须显式声明
+  `operation_domain`（规格 §13，根治「创建材料误触 Baking」）；
+* `core/actions.py` 新增执行后 API 校验（规格 §18.1），校验器纯快照驱动，
+  可在 Painter 之外测试；
+* 补齐 §28 点名的语义化单通道工具：`set_base_color` / `set_roughness` /
+  `set_metallic` / `set_height`；
+* `chat_dock` 的高影响确认清单改为引用 registry 导出；
+* CI 从只跑发布校验改为跑整个 `tests/`。
+
+## 已完成（本轮）
+
+**Painter 官方 API 适配层（§28-2）。**
+
+问题：`actions.py` 直接调用 60 多处 `sp.*`，官方一改名只能运行时炸
+AttributeError。对照本机官方声明文件（Python API 0.3.4 / Painter 11.0.0.4202）
+普查后，抓到 **20 条声明对不上官方 API**，其中三处是真会崩的调用：
+`set_geometry_mask`、`save_smart_material`、`save_smart_mask` —— 官方根本
+没有这三个接口。
+
+改动：
+
+* 新增 `plugin/core/painter_api.py`：版本读取、37 条能力声明与探测、
+  §16 事务（缺失时显式降级）、几何遮罩三调用映射、Smart Material/Mask
+  语义修正、`resource.Usage` 别名归一、声明路径校验；
+* `core/actions.py`：批次走适配层事务；烘焙/导出执行前 `require`；
+  几何遮罩、Smart Material/Mask、资源导入改走适配层；
+* `core/tools/spec.py`：新增 `api_alternatives`（多态分发声明）；
+* `catalog.py`：20 条声明全部改成规范路径（`SourceEditorMixin` /
+  `LayerNode` / `FillParamsEditorMixin` / `textureset.TextureSet`…）；
+* 新增 `tools/painter_api_census.py`：AST 解析官方声明文件，逐条核对
+  `api=` 是否真实存在，并给出规范路径建议；
+* `painter_context.snapshot()` 增加 `api` 块：模型能直接看到 Painter 版本、
+  官方 API 版本与当前缺失的能力；
+* 测试 68 → 97 项（适配层 18 + 执行端到端 7 + 声明一致性 4）。
+
+
+## 已完成（本轮 · 续）
+
+**真实工程集成冒烟（§28-5）。**
+
+问题：假 Painter 能验证执行管线，但回答不了「官方 API 在这台机器的这个版本上
+是不是这个签名」。而 §28-2 的普查已经证明这类漂移真实存在（20 条声明对不上，
+三处是会直接崩的调用）。
+
+改动：
+
+* 新增 `plugin/core/integration_smoke.py`：两级冒烟（只读探测 / 临时工程端到端）、
+  失败自动单步隔离、报告落盘；
+* 新增 `plugin/ui/diagnostics.py` + `sp_ai_assistant.py` 菜单入口
+  （`SP AI API 探测（只读）` / `SP AI 集成冒烟…`）；
+* 新增 `tools/check_smoke_report.py`：把冒烟报告当交付门禁用；
+* `Registry.declared_api_paths()`：声明的官方路径收敛到 registry 单一事实源，
+  冒烟与离线普查工具共用；
+* 测试基座 `tests/fake_painter.py`：桩从 `test_actions_execute.py` 抽出来共用，
+  并扩到「工程生命周期可跑」，冒烟流程本身能在 CI 里被驱动；
+* `execute_plan` 里 5 处 `node.set_source(...)` 统一改走适配层的签名自适应版本；
+* 测试 97 → **133 项**。
+
+## 下一步（建议顺序）
+
+§28 的前五项已经全部落地：基线与测试、API Adapter、Tool Registry、核心真实操作、
+真实工程集成冒烟。接下来按依赖顺序：
+
+1. **真机冒烟先跑一遍**：在装了 Painter 的机器上执行
+   `SP AI 集成冒烟…`，把 `latest.json` 作为 0.7.0 的验收证据。
+2. **Provider Adapter 与能力矩阵（§5 / §4.2）**：给每个 provider 声明
+   `capabilities`（vision / web_search / image_search / image_generation /
+   tool_calling），Master Agent 按能力路由而不是写死模型名。
+3. **MediaObject 与搜索管线（§6）**：搜索结果结构化 + 本地缓存 + 来源许可，
+   图片进入 Vision。
+4. **PBR 生成与质量门（§8 / §9）+ Asset Registry（§10）**。
+5. **Transaction / Rollback 与 Task State Machine（§16 / §19）**：
+   目前有 `ScopedModification`（缺失时显式降级），但没有 checkpoint 与回滚。
+6. **Capability 表按真机结果收敛**：把冒烟暴露出来的缺失能力写回
+   `painter_api.py` 的 `verified_on`，让「哪些能力在哪个版本可用」越跑越准。

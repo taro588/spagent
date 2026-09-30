@@ -2,6 +2,33 @@ from __future__ import annotations
 
 import substance_painter as sp
 
+from core.painter_api import PainterUnavailable, default_api
+
+
+def api_context() -> dict:
+    """当前 Painter 与官方 API 版本、以及能力探测结果（§28-2）。
+
+    模型必须知道自己面对的是哪个版本的 Painter：同一个动作在 7.2 和 11.0
+    上可用的官方接口不一样，能力表能把「做不了」提前说清楚。
+    """
+    api = default_api()
+    try:
+        info = api.runtime_info()
+    except PainterUnavailable as exc:
+        return {"available": False, "message": str(exc)}
+    report = api.capability_report()
+    unsupported = sorted(name for name, item in report["capabilities"].items()
+                         if not item["supported"])
+    return {
+        "available": True,
+        "painter_version": info.painter_version_text,
+        "python_api_version": info.python_api_version_text,
+        "supported": info.supported,
+        "notes": list(info.notes),
+        "verified_against": report["verified_against"],
+        "unsupported_capabilities": unsupported,
+    }
+
 
 def _safe_value(value):
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -83,6 +110,7 @@ def snapshot() -> dict:
     result = {
         "painter_version": ".".join(map(str, sp.application.version_info())),
         "project_open": bool(sp.project.is_open()),
+        "api": api_context(),
     }
 
     if not result["project_open"]:

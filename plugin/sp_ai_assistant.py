@@ -10,7 +10,7 @@ from core.qt_compat import qt_modules
 _widgets = []
 _dock = None
 _menu_actions = []
-PLUGIN_VERSION = "0.6.7"
+PLUGIN_VERSION = "0.7.0"
 MIN_PAINTER_VERSION = (7, 2, 0)
 
 
@@ -99,6 +99,17 @@ def start_plugin():
         )
         substance_painter.ui.add_action(substance_painter.ui.ApplicationMenu.Window, browser_action)
         _menu_actions.append(browser_action)
+
+        # §28-5 集成冒烟入口。诊断挂载失败不该拖垮插件主体，因此单独兜住异常。
+        try:
+            from ui.diagnostics import build_actions as build_diagnostic_actions
+
+            for diagnostic_action in build_diagnostic_actions(QtGui, QtWidgets, QtCore, PLUGIN_VERSION):
+                substance_painter.ui.add_action(
+                    substance_painter.ui.ApplicationMenu.Window, diagnostic_action)
+                _menu_actions.append(diagnostic_action)
+        except Exception:
+            _error_log("诊断入口挂载失败:\n" + traceback.format_exc())
 
         _widgets.append(assistant_widget)
     except Exception as exc:

@@ -13,8 +13,8 @@ _SETTINGS_APP = "SP-AI-Assistant"
 class CollapsibleBrowser(QtWidgets.QWidget):
     """Browser pane that collapses away completely, like the ChatGPT desktop sidebar.
 
-    Collapse/expand is driven from the sidebar toggle in the chat header
-    (AssistantDock.browser_toggle); no floating buttons or edge rails.
+    Visibility is driven by the AI 对话 / 浏览器 segmented tabs in the chat
+    header (AssistantDock connects the signals); no floating buttons or rails.
     """
     collapsed_changed = QtCore.Signal(bool)
 
@@ -90,7 +90,7 @@ class CollapsibleBrowser(QtWidgets.QWidget):
 class AssistantDock(QtWidgets.QWidget):
     """Single dock: chat on the left, collapsible ChatGPT-style browser on the right."""
 
-    def __init__(self, version_text="0.6.7"):
+    def __init__(self, version_text="0.7.0"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
@@ -104,19 +104,9 @@ class AssistantDock(QtWidgets.QWidget):
         self.browser_side = CollapsibleBrowser()
         self.browser_side.browser.collapse_requested.connect(self._save_splitter)
 
-        # GPT-desktop-style sidebar toggle: far RIGHT end of the chat header,
-        # directly against the browser pane, with the Ctrl+Alt+B shortcut.
-        self.browser_toggle = QtWidgets.QToolButton()
-        self.browser_toggle.setObjectName("SPAI_Browser_Toggle")
-        self.browser_toggle.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        self.browser_toggle.setFixedSize(30, 28)
-        self.browser_toggle.setStyleSheet(
-            "QToolButton { background:transparent; border:none; border-radius:8px;"
-            " color:#c8cdd6; font-size:15px; }"
-            "QToolButton:hover { background:#262a31; color:#ffffff; }"
-        )
-        self.browser_toggle.clicked.connect(self.toggle_browser)
-        self.chat.header_layout.addWidget(self.browser_toggle)
+        # Screenshot-style segmented tabs: the 浏览器 tab in the chat header
+        # drives this pane; Ctrl+Alt+B still works as a shortcut.
+        self.chat.browser_tab_changed.connect(self._on_browser_tab)
         shortcut_cls = getattr(QtGui, "QShortcut", None) or getattr(QtWidgets, "QShortcut", None)
         if shortcut_cls is not None:
             shortcut = shortcut_cls(QtGui.QKeySequence("Ctrl+Alt+B"), self)
@@ -134,8 +124,8 @@ class AssistantDock(QtWidgets.QWidget):
         self.splitter.splitterMoved.connect(self._save_splitter)
         root.addWidget(self.splitter)
 
-        self.browser_side.collapsed_changed.connect(self._sync_toggle)
-        self._sync_toggle(self.browser_side.is_collapsed())
+        self.browser_side.collapsed_changed.connect(self._sync_chat_tabs)
+        self._sync_chat_tabs(self.browser_side.is_collapsed())
 
         saved_sizes = self._settings.value("browser/splitter_sizes")
         if isinstance(saved_sizes, (list, tuple)) and len(saved_sizes) == 2:
@@ -146,13 +136,12 @@ class AssistantDock(QtWidgets.QWidget):
             except Exception:
                 pass
 
-    def _sync_toggle(self, collapsed: bool):
-        if collapsed:
-            self.browser_toggle.setText("◫")
-            self.browser_toggle.setToolTip("显示/隐藏侧边面板 Ctrl+Alt+B")
-        else:
-            self.browser_toggle.setText("◫")
-            self.browser_toggle.setToolTip("显示/隐藏侧边面板 Ctrl+Alt+B")
+    def _on_browser_tab(self, show_browser: bool):
+        self.browser_side.set_collapsed(not show_browser)
+
+    def _sync_chat_tabs(self, collapsed: bool):
+        """Reflect the pane state back onto the segmented tabs."""
+        self.chat.sync_browser_tab(collapsed)
 
     def _save_splitter(self, *_args):
         if self.browser_side.is_collapsed():

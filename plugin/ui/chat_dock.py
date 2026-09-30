@@ -4,10 +4,13 @@ import base64
 import html
 import json
 import mimetypes
+import re
+import threading
 import time
+import urllib.request
 
-from core.actions import execute_plan, validate_plan
-from core.ai_client import AI_CLIENT_BUILD, PROVIDERS, LAST_USAGE, chat, web_search, official_api_test
+from core.actions import HIGH_IMPACT_ACTIONS, execute_plan, validate_plan
+from core.ai_client import AI_CLIENT_BUILD, PROVIDERS, LAST_USAGE, chat, web_search
 from core.painter_context import prompt_context
 from core.qt_compat import qt_modules
 from core.settings import provider_config, save_provider_config
@@ -27,51 +30,26 @@ SYSTEM_PROMPT = """你是 SP AI Assistant，运行在 Adobe Substance 3D Painter
 bake 只有在用户明确要求“烘焙/烘焙法线AO曲率”等，或明确要求依赖 Mesh Map 的效果并且确实需要重新烘焙时才设为 true；不能因为“创建材质”自动触发 bake_start。
 材质工作流可选项：material、channels、parameters、smart_mask、generator、filter、bake、export_path、export_preset。没有用户要求的选项保持为空/false。
 完成材质制作后，如用户明确要求输出贴图，再使用 export_textures。
+你可以在回复中附带参考图片：使用 Markdown 图片语法 ![标题](图片URL)。只使用联网搜索结果或用户提供的真实图片 URL，绝不要编造地址；插件会把图片渲染成卡片网格（缩略图 + 标题 + 来源）。用户询问材质/贴图参考、搜索结果展示等场景应尽量带图。
 """
-# These actions always require explicit confirmation, including in auto mode.
-# Keep this list conservative: changing many existing nodes or exporting/deleting
-# project data should never happen silently.
-HIGH_IMPACT_ACTIONS = {
-    "delete_selected",
-    "export_textures",
-}
+# §17 权限模型：EXPORT / DANGEROUS 级别的工具在任何模式下都必须先确认。
+# 清单来自 Tool Registry（core.actions 再导出），不在这里维护第二份。
 
 
 class _Worker(QtCore.QObject):
     finished = QtCore.Signal(str, str, dict)
 
-    def __init__(self, provider, model, key, base_url, messages, pre_search_query=""):
+    def __init__(self, provider, model, key, base_url, messages):
         super().__init__()
-        self.args = (provider, model, key, base_url, messages, pre_search_query)
+        self.args = (provider, model, key, base_url, messages)
 
     @QtCore.Slot()
     def run(self):
         started = time.monotonic()
         try:
-            provider, model, key, base_url, messages, pre_search_query = self.args
-            if pre_search_query:
-                bundle = web_search(pre_search_query, 6)
-                enriched = list(messages)
-                if enriched and enriched[-1].get("role") == "user":
-                    last = dict(enriched[-1])
-                    content = last.get("content", "")
-                    search_text = (
-                        "\n\n[网页搜索补充数据]\n" +
-                        json.dumps(bundle, ensure_ascii=False) +
-                        "\n请结合这些搜索数据回答用户；来源链接应保留，不要把 URL 编造为事实。"
-                    )
-                    if isinstance(content, str):
-                        last["content"] = content + search_text
-                    elif isinstance(content, list):
-                        parts = list(content)
-                        parts.insert(0, {"type": "text", "text": search_text})
-                        last["content"] = parts
-                    enriched[-1] = last
-                    messages = enriched
+            provider, model, key, base_url, messages = self.args
             text = chat(provider, messages, model, key, base_url)
-            from core.ai_client import LAST_WEB_RESULTS
             meta = dict(LAST_USAGE)
-            meta["web_results"] = dict(LAST_WEB_RESULTS or {})
             meta["elapsed"] = round(time.monotonic() - started, 1)
             meta.setdefault("model", model)
             self.finished.emit("ok", text, meta)
@@ -83,34 +61,12 @@ class _Worker(QtCore.QObject):
             })
 
 
-class _DirectApiWorker(QtCore.QObject):
-    finished = QtCore.Signal(str, str, dict)
-
-    def __init__(self, provider, model, key, base_url):
-        super().__init__()
-        self.args = (provider, model, key, base_url)
-
-    @QtCore.Slot()
-    def run(self):
-        started = time.monotonic()
-        provider, model, key, base_url = self.args
-        try:
-            result = official_api_test(provider, model, key, base_url)
-            self.finished.emit(
-                "ok",
-                "官方 AI API 直连成功\n" + json.dumps(result, ensure_ascii=False, indent=2),
-                {"elapsed": round(time.monotonic() - started, 1), "provider": provider, "model": model},
-            )
-        except Exception as exc:
-            self.finished.emit(
-                "error",
-                "官方 AI API 直连失败\n" + type(exc).__name__ + ": " + str(exc),
-                {"elapsed": round(time.monotonic() - started, 1), "provider": provider, "model": model},
-            )
-
-
 class ChatDock(QtWidgets.QWidget):
-    def __init__(self, version_text="0.6.7"):
+    """AI conversation pane with a segmented AI 对话 / 浏览器 tab bar."""
+
+    # True when the user activates the 浏览器 tab (show the side browser pane).
+    browser_tab_changed = QtCore.Signal(bool)
+    def __init__(self, version_text="0.7.0"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
@@ -125,6 +81,8 @@ class ChatDock(QtWidgets.QWidget):
         self._rendered = []
         self._last_meta = {}
         self._busy_started = None
+        # url -> QImage | None(pending) | "fail"; powers the AI image-card grid
+        self._thumb_cache = {}
         self._build_ui(version_text)
         self._load_provider()
 
@@ -174,11 +132,26 @@ class ChatDock(QtWidgets.QWidget):
                 selection-background-color: #2f4f46;
             }
             QPushButton#SPAI_SendButton {
-                background: #ffffff; color: #0d0f12; border: none; border-radius: 16px;
-                font-size: 12px; font-weight: 700; padding: 0px; letter-spacing: 0.5px;
+                background: #17a398; color: #ffffff; border: none; border-radius: 16px;
+                font-size: 15px; font-weight: 700; padding: 0px;
             }
-            QPushButton#SPAI_SendButton:hover:!disabled { background: #e8eaee; }
-            QPushButton#SPAI_SendButton:disabled { background: #43484f; color: #9aa0aa; }
+            QPushButton#SPAI_SendButton:hover:!disabled { background: #1bb3a7; }
+            QPushButton#SPAI_SendButton:disabled { background: #2c3a44; color: #6b7a85; }
+            QPushButton#SPAI_IconBtn, QToolButton#SPAI_IconBtn {
+                background: transparent; color: #c8cdd6; border: none;
+                border-radius: 10px; font-size: 15px; padding: 0px;
+            }
+            QPushButton#SPAI_IconBtn:hover, QToolButton#SPAI_IconBtn:hover {
+                background: #262b33; color: #ffffff;
+            }
+            QToolButton#SPAI_SegmentTab {
+                background: transparent; border: none; color: #8f96a3;
+                border-radius: 9px; padding: 6px 16px; font-size: 13px;
+            }
+            QToolButton#SPAI_SegmentTab:hover:!checked { background: #1c2027; color: #c8cdd6; }
+            QToolButton#SPAI_SegmentTab:checked {
+                background: #262b33; color: #ffffff; font-weight: 600;
+            }
             QScrollArea { background: transparent; border: none; }
             QWidget#SPAI_SettingsContent { background: transparent; }
             QFrame#SPAI_Card {
@@ -199,28 +172,50 @@ class ChatDock(QtWidgets.QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
-        # GPT-desktop-style header: brand block left (title + subtitle), controls right.
-        header = QtWidgets.QHBoxLayout()
-        self.header_layout = header
-        header.setSpacing(8)
-        brand = QtWidgets.QVBoxLayout()
-        brand.setSpacing(1)
-        title = QtWidgets.QLabel("<b>SP AI Assistant</b>")
-        title.setStyleSheet("font-size: 16px; letter-spacing: 0.2px;")
-        brand.addWidget(title)
-        self.chat_hint = QtWidgets.QLabel("Substance 3D Painter · AI 材质助手")
-        self.chat_hint.setStyleSheet("color:#8f96a3; font-size:12px;")
-        brand.addWidget(self.chat_hint)
-        header.addLayout(brand)
-        header.addStretch()
+        # --- top bar (screenshot style): model selector left, gear + refresh right ---
+        top = QtWidgets.QHBoxLayout()
+        self.header_layout = top
+        top.setSpacing(6)
         self.model_badge = QtWidgets.QComboBox()
-        self.model_badge.setMinimumWidth(180)
-        self.model_badge.setFixedHeight(32)
-        header.addWidget(self.model_badge, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
-        self.settings_toggle = QtWidgets.QPushButton("⚙")
-        self.settings_toggle.setFixedSize(36, 32)
-        header.addWidget(self.settings_toggle, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
-        root.addLayout(header)
+        self.model_badge.setMinimumWidth(220)
+        self.model_badge.setFixedHeight(34)
+        top.addWidget(self.model_badge)
+        top.addStretch()
+        self.refresh_btn = QtWidgets.QToolButton()
+        self.refresh_btn.setObjectName("SPAI_IconBtn")
+        self.refresh_btn.setText("↻")
+        self.refresh_btn.setFixedSize(34, 34)
+        self.refresh_btn.setToolTip("刷新模型列表")
+        self.refresh_btn.clicked.connect(self._refresh_models)
+        top.addWidget(self.refresh_btn)
+        self.settings_toggle = QtWidgets.QToolButton()
+        self.settings_toggle.setObjectName("SPAI_IconBtn")
+        self.settings_toggle.setText("⚙")
+        self.settings_toggle.setFixedSize(34, 34)
+        self.settings_toggle.setToolTip("设置")
+        top.addWidget(self.settings_toggle)
+        root.addLayout(top)
+
+        # --- segmented tabs: AI 对话 / 浏览器 (drives the side browser pane) ---
+        tabs = QtWidgets.QHBoxLayout()
+        tabs.setSpacing(6)
+        self.tab_chat = QtWidgets.QToolButton()
+        self.tab_chat.setObjectName("SPAI_SegmentTab")
+        self.tab_chat.setText("💬 AI 对话")
+        self.tab_chat.setCheckable(True)
+        self.tab_chat.setChecked(True)
+        self.tab_chat.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.tab_browser = QtWidgets.QToolButton()
+        self.tab_browser.setObjectName("SPAI_SegmentTab")
+        self.tab_browser.setText("🌐 浏览器")
+        self.tab_browser.setCheckable(True)
+        self.tab_browser.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        tabs.addWidget(self.tab_chat)
+        tabs.addWidget(self.tab_browser)
+        tabs.addStretch()
+        root.addLayout(tabs)
+        self.tab_chat.clicked.connect(self._activate_chat_tab)
+        self.tab_browser.clicked.connect(self._activate_browser_tab)
 
         # --- settings panel (⚙): card-based, scrollable, GPT-style ---
         self.provider = QtWidgets.QComboBox()
@@ -421,23 +416,33 @@ class ChatDock(QtWidgets.QWidget):
 
         self.input = QtWidgets.QPlainTextEdit()
         self.input.setObjectName("SPAI_ChatInput")
-        self.input.setPlaceholderText("询问任何材质问题，输入 @ 添加 Painter 上下文…")
+        self.input.setPlaceholderText("请输入你的问题，或按 Ctrl+Enter 发送…")
         self.input.setFixedHeight(46)
         self.input.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.input.installEventFilter(self)
         self.input.textChanged.connect(self._autosize_input)
-        composer_lay.addWidget(self.input, 0, 0, 1, 4)
+        composer_lay.addWidget(self.input, 0, 0, 1, 5)
 
-        self.attach = QtWidgets.QPushButton("+")
+        self.attach = QtWidgets.QToolButton()
         self.attach.setObjectName("SPAI_AttachButton")
+        self.attach.setText("🖼")
         self.attach.setFixedSize(30, 30)
         self.attach.setToolTip("添加参考图、材质图或其他图片，让 AI 分析后参与制作")
         self.attach.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.attach.clicked.connect(self._show_attach_menu)
         composer_lay.addWidget(self.attach, 1, 0)
 
+        self.at_btn = QtWidgets.QToolButton()
+        self.at_btn.setObjectName("SPAI_AttachButton")
+        self.at_btn.setText("@")
+        self.at_btn.setFixedSize(30, 30)
+        self.at_btn.setToolTip("插入 @：发送时自动附带 Painter 当前上下文")
+        self.at_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.at_btn.clicked.connect(self._insert_at)
+        composer_lay.addWidget(self.at_btn, 1, 1)
+
         composer_lay.addItem(QtWidgets.QSpacerItem(
-            8, 8, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum), 1, 1)
+            8, 8, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum), 1, 2)
 
         self.bottom_mode = QtWidgets.QComboBox()
         self.bottom_mode.setObjectName("SPAI_ModeButton")
@@ -446,15 +451,15 @@ class ChatDock(QtWidgets.QWidget):
         self.bottom_mode.addItem("仅计划", "plan")
         self.bottom_mode.setCurrentIndex(0)
         self.bottom_mode.setToolTip("与执行模式同步")
-        composer_lay.addWidget(self.bottom_mode, 1, 2)
+        composer_lay.addWidget(self.bottom_mode, 1, 3)
 
-        self.send = QtWidgets.QPushButton("Enter")
+        self.send = QtWidgets.QPushButton("➤")
         self.send.setObjectName("SPAI_SendButton")
-        self.send.setFixedSize(76, 32)
-        self.send.setToolTip("发送（Enter 发送 / Shift+Enter 换行）")
+        self.send.setFixedSize(34, 34)
+        self.send.setToolTip("发送（Ctrl+Enter 发送 / Enter 换行）")
         self.send.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.send.clicked.connect(self._send)
-        composer_lay.addWidget(self.send, 1, 3)
+        composer_lay.addWidget(self.send, 1, 4)
         root.addWidget(self.composer)
 
         self.execution_mode.currentIndexChanged.connect(self._sync_bottom_mode)
@@ -469,6 +474,31 @@ class ChatDock(QtWidgets.QWidget):
         visible = not self.settings_panel.isVisible()
         self.settings_panel.setVisible(visible)
         self.history.setVisible(not visible)
+
+    # ------------------------- AI 对话 / 浏览器 segmented tabs -----------------
+
+    def _activate_chat_tab(self):
+        self.tab_chat.setChecked(True)
+        self.tab_browser.setChecked(False)
+        self.browser_tab_changed.emit(False)
+
+    def _activate_browser_tab(self):
+        self.tab_browser.setChecked(True)
+        self.tab_chat.setChecked(False)
+        self.browser_tab_changed.emit(True)
+
+    def sync_browser_tab(self, collapsed: bool):
+        """Called by AssistantDock when the browser pane visibility changes
+        through any path (shortcut, browser-side close button)."""
+        self.tab_browser.setChecked(not collapsed)
+        self.tab_chat.setChecked(collapsed)
+
+    def _refresh_models(self):
+        try:
+            self._load_provider(self.provider.currentText())
+            self.status.setText("✓ 模型列表已刷新")
+        except Exception as exc:  # noqa: BLE001
+            self.status.setText("刷新失败：" + str(exc))
 
     def _toggle_key_visibility(self, checked):
         self.key.setEchoMode(
@@ -765,73 +795,85 @@ class ChatDock(QtWidgets.QWidget):
         if self.execution_mode.currentData() == "auto":
             self._auto_execute_if_safe(plan)
     def _official_api_test(self):
-        """Test the configured AI provider's official endpoint directly."""
-        self._save()
-        provider = self.provider.currentText()
-        model = self.model.currentText().strip()
-        key = self.key.text().strip()
-        base_url = self.base_url.text().strip()
-        self.status.setText("正在直连官方 AI API……")
-        self._direct_api_thread = QtCore.QThread()
-        self._direct_api_worker = _DirectApiWorker(provider, model, key, base_url)
-        self._direct_api_worker.moveToThread(self._direct_api_thread)
-        self._direct_api_thread.started.connect(self._direct_api_worker.run)
-        self._direct_api_worker.finished.connect(self._official_api_result)
-        self._direct_api_worker.finished.connect(self._direct_api_thread.quit)
-        self._direct_api_thread.finished.connect(self._direct_api_thread_finished)
-        self._direct_api_thread.start()
-
-    @QtCore.Slot(str, str, dict)
-    def _official_api_result(self, state, text, meta=None):
-        self._last_meta = dict(meta or {})
-        self.status.setText("✓ 官方 AI API 直连成功" if state == "ok" else "✗ 官方 AI API 直连失败")
-        self._append("官方 API 直连测试" if state == "ok" else "官方 API 直连错误", text)
-
-    def _direct_api_thread_finished(self):
-        self._direct_api_worker = None
-        thread = self._direct_api_thread
-        self._direct_api_thread = None
-        if thread is not None:
-            thread.deleteLater()
-
+        """Call the official Painter Python API bridge without involving the AI."""
+        test_name = "SP_AI_API_TEST"
+        plan = {"actions": [{"action": "create_fill_layer", "name": test_name}]}
+        try:
+            result = execute_plan(plan)
+            self._last_execution = result
+            self._append("官方 API 测试", "已直接调用 substance_painter.layerstack.insert_fill()。\n" + json.dumps(result, ensure_ascii=False, indent=2))
+            self.status.setText("✓ 官方 Painter Python API 执行成功")
+        except Exception as exc:
+            self._append("官方 API 测试失败", type(exc).__name__ + ": " + str(exc))
+            self.status.setText("✗ 官方 Painter Python API 执行失败")
     def _clear(self):
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._attachments.clear()
         self._last_plan = None
         self._last_execution = None
         self._rendered.clear()
+        self._thumb_cache.clear()
         self.history.clear()
         self.status.setText("对话已清空")
 
     @staticmethod
-    def _extract_image_urls(message):
-        import re
-        urls = []
+    def _extract_images(message):
+        """Pull images out of a message: markdown ![alt](url) (with alt text),
+        plus image_url/image/url JSON-style keys. Returns [{url, alt}]."""
         text = str(message or "")
-        for match in re.finditer(r"!\[[^\]]*\]\((https?://[^)\s]+|data:image/[^)\s]+)\)", text):
-            urls.append(match.group(1))
+        found = []
+        for match in re.finditer(r"!\[([^\]]*)\]\((https?://[^)\s]+|data:image/[^)\s]+)\)", text):
+            found.append({"url": match.group(2).strip(), "alt": match.group(1).strip()})
         for match in re.finditer(r'(?:image_url|image|url)\s*[:=]\s*["\\\'](https?://[^"\\\']+|data:image/[^"\\\']+)', text):
-            urls.append(match.group(1))
-        return list(dict.fromkeys(urls))
+            found.append({"url": match.group(1).strip(), "alt": ""})
+        deduped = []
+        seen = set()
+        for item in found:
+            if item["url"] and item["url"] not in seen:
+                seen.add(item["url"])
+                deduped.append(item)
+        return deduped
 
     def _append(self, role, message, images=None, meta=None):
         text = str(message or "")
         if isinstance(message, (dict, list)):
             text = json.dumps(message, ensure_ascii=False, indent=2)
-        images = list(images or [])
-        images.extend(self._extract_image_urls(text))
+        found = list(images or [])
+        found.extend(self._extract_images(text))
+        normalized = []
+        seen = set()
+        for img in found:
+            url = img if isinstance(img, str) else str(img.get("url") or "")
+            alt = "" if isinstance(img, str) else str(img.get("alt") or "")
+            if url and url not in seen:
+                seen.add(url)
+                normalized.append({"url": url, "alt": alt})
         is_user = str(role).startswith("你")
         is_ai = str(role) == "AI"
         self._rendered.append({
             "role": "user" if is_user else ("ai" if is_ai else "system"),
             "label": str(role),
             "text": text,
-            "images": list(dict.fromkeys(images)),
+            "images": normalized,
             "meta": dict(meta) if meta else dict(self._last_meta),
             "expanded": False,
+            "sys_expanded": False,
+            "show_all_images": False,
+            "sections": {},
         })
         if is_ai:
             self._last_meta = {}
+            # decode inline data-URL images right away; fetch remote thumbnails
+            for img in normalized:
+                if img["url"].startswith("data:image/"):
+                    image = QtGui.QImage()
+                    try:
+                        image.loadFromData(base64.b64decode(img["url"].split(",", 1)[1]))
+                        self._thumb_cache[img["url"]] = image
+                    except Exception:
+                        self._thumb_cache[img["url"]] = "fail"
+                elif img["url"].startswith("http"):
+                    self._ensure_thumbs([img["url"]])
         self._rerender_history()
 
     def _on_anchor(self, url):
@@ -847,11 +889,87 @@ class ChatDock(QtWidgets.QWidget):
                 item = self._rendered[index]
                 item["expanded"] = not item["expanded"]
                 self._rerender_history()
+        elif link.startswith("sys-"):
+            try:
+                index = int(link[len("sys-"):])
+            except ValueError:
+                return
+            if 0 <= index < len(self._rendered):
+                item = self._rendered[index]
+                item["sys_expanded"] = not item.get("sys_expanded")
+                self._rerender_history()
+        elif link.startswith("sec-"):
+            parts = link[len("sec-"):].split("-")
+            if len(parts) == 2:
+                try:
+                    index, section = int(parts[0]), parts[1]
+                except ValueError:
+                    return
+                if 0 <= index < len(self._rendered):
+                    item = self._rendered[index]
+                    sections = item.setdefault("sections", {})
+                    sections[section] = not sections.get(section, True)
+                    self._rerender_history()
+        elif link.startswith("more-"):
+            try:
+                index = int(link[len("more-"):])
+            except ValueError:
+                return
+            if 0 <= index < len(self._rendered):
+                item = self._rendered[index]
+                item["show_all_images"] = not item.get("show_all_images")
+                self._rerender_history()
+
+    # ------------------------- AI image-card grid -------------------------
+
+    _THUMB_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
+    }
+
+    def _ensure_thumbs(self, urls):
+        """Download thumbnails off-thread; the grid re-renders when ready."""
+        pending = [u for u in urls
+                   if u not in self._thumb_cache and str(u).startswith("http")]
+        if not pending:
+            return
+        for u in pending:
+            self._thumb_cache[u] = None  # mark pending → placeholder cell
+
+        def task():
+            for target in pending:
+                image = QtGui.QImage()
+                try:
+                    request = urllib.request.Request(target, headers=self._THUMB_HEADERS)
+                    with urllib.request.urlopen(request, timeout=15) as response:
+                        raw = response.read(4 * 1024 * 1024)
+                    image.loadFromData(raw)
+                except Exception:
+                    pass
+                self._thumb_cache[target] = image if not image.isNull() else "fail"
+            QtCore.QMetaObject.invokeMethod(
+                self, "_thumbs_ready", QtCore.Qt.ConnectionType.QueuedConnection)
+
+        threading.Thread(target=task, daemon=True).start()
+
+    @QtCore.Slot()
+    def _thumbs_ready(self):
+        self._rerender_history()
 
     @staticmethod
-    def _images_html(images):
+    def _host_of(url):
+        match = re.match(r"^https?://([^/]+)", str(url or ""))
+        host = match.group(1) if match else ""
+        return host[4:] if host.startswith("www.") else host
+
+    def _images_html(self, images):
+        """User-attachment strip (data URLs render immediately)."""
         blocks = ""
-        for url in images:
+        for img in images:
+            url = img["url"] if isinstance(img, dict) else str(img)
             safe_url = html.escape(str(url), quote=True)
             blocks += (
                 '<div style="margin-top:8px;">'
@@ -860,15 +978,136 @@ class ChatDock(QtWidgets.QWidget):
             )
         return blocks
 
+    def _images_grid_html(self, index, item):
+        """AI reply images as a screenshot-style card grid: thumbnail,
+        title, source host, and a 查看更多图片 expander."""
+        images = item.get("images") or []
+        if not images:
+            return ""
+        limit = 6 if not item.get("show_all_images") else len(images)
+        cells = []
+        for img in images[:limit]:
+            url = img["url"]
+            thumb = self._thumb_cache.get(url)
+            if isinstance(thumb, QtGui.QImage) and not thumb.isNull():
+                picture = f'<img src="{html.escape(url, quote=True)}" width="150">'
+            else:
+                picture = (
+                    '<table width="150" cellspacing="0" cellpadding="0"><tr>'
+                    '<td bgcolor="#181a1f" height="86" align="center" valign="middle">'
+                    '<span style="color:#5a6070;">图片</span></td></tr></table>'
+                )
+            title = (img.get("alt") or "查看图片").strip()[:24]
+            cells.append(
+                '<td width="33%" bgcolor="#16181d" style="padding:6px;">'
+                + picture
+                + f'<div style="color:#e8eaed; margin-top:3px;">{html.escape(title)}</div>'
+                + f'<div style="color:#6d7480;">{html.escape(self._host_of(url))}</div>'
+                + '</td>'
+            )
+        rows = []
+        for start in range(0, len(cells), 3):
+            row = cells[start:start + 3]
+            if len(row) < 3:
+                row.extend(['<td width="33%" bgcolor="#16181d"></td>'] * (3 - len(row)))
+            rows.append("<tr>" + "".join(row) + "</tr>")
+        grid = ('<table width="100%" cellspacing="0" cellpadding="0" border="0">'
+                + "".join(rows) + '</table>')
+        more = ""
+        if len(images) > 6:
+            label = "收起图片" if item.get("show_all_images") else "查看更多图片 ›"
+            more = (
+                f'<div align="center" style="margin-top:8px;">'
+                f'<a href="#more-{index}" style="color:#8ab4f8; text-decoration:none;">{label}</a></div>'
+            )
+        return f'<div style="margin-top:8px;">{grid}</div>' + more
+
     def _user_block(self, item):
         safe = html.escape(item["text"]).replace("\n", "<br>")
         return (
             '<div align="right" style="margin:10px 2px 6px 2px;">'
             '<table cellpadding="0" cellspacing="0"><tr>'
-            '<td style="background:#24272d; border:1px solid #343941; border-radius:14px; '
+            '<td style="background:#39414e; border:none; border-radius:14px; '
             'padding:10px 14px; color:#f2f3f5; line-height:1.5; max-width:520px;">'
             f'{safe}{self._images_html(item["images"])}</td></tr></table></div>'
         )
+
+    @staticmethod
+    def _inline_md(text):
+        """Escape + minimal inline markdown: **bold**, `code`."""
+        s = html.escape(text)
+        s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
+        s = re.sub(r"`([^`]+)`",
+                   r'<span style="background:#20242b; font-family:Consolas,monospace;">\1</span>',
+                   s)
+        return s
+
+    def _format_ai_text(self, index, item):
+        """Screenshot-style rendering with collapsible sections.
+
+        * `#` headings and short `标题：` lines become collapsible directory
+          rows (▾/▸ toggled via #sec- anchors).
+        * 「正在……」 lines render as blue status rows like the reference UI.
+        * Pure markdown-image lines are skipped (drawn as the card grid).
+        """
+        text = str(item.get("text") or "")
+        sections = item.setdefault("sections", {})
+        out = []
+        sec_n = -1
+        in_list = False
+
+        def visible():
+            return sec_n < 0 or sections.get(f"{index}-{sec_n}", True)
+
+        for raw_line in text.split("\n"):
+            line = raw_line.strip()
+            if not line:
+                if visible():
+                    out.append('<div style="height:6px;"></div>')
+                continue
+            if re.fullmatch(r"!\[[^\]]*\]\([^)\s]+\)", line):
+                continue  # markdown image → card grid
+            is_heading = line.startswith("#") or (
+                len(line) <= 30
+                and line.endswith(("：", ":"))
+                and not line.startswith(("-", "*", "•"))
+            )
+            if is_heading:
+                if in_list:
+                    out.append("</div>")
+                    in_list = False
+                sec_n += 1
+                expanded = sections.setdefault(f"{index}-{sec_n}", True)
+                title = line.lstrip("#").strip().rstrip("：:")
+                arrow = "▾" if expanded else "▸"
+                out.append(
+                    '<div style="margin:10px 0 4px 0;">'
+                    f'<a href="#sec-{index}-{sec_n}" style="color:#f2f3f5; '
+                    'text-decoration:none; font-size:13px;">'
+                    f'{arrow} <b>{self._inline_md(title)}</b></a></div>'
+                )
+                continue
+            if not visible():
+                continue
+            if line.startswith(("- ", "* ", "• ")):
+                if not in_list:
+                    out.append('<div style="margin:4px 0 2px 0;">')
+                    in_list = True
+                out.append('<div style="margin:3px 0; color:#e8eaed;">'
+                           f'• {self._inline_md(line[2:])}</div>')
+                continue
+            if in_list:
+                out.append("</div>")
+                in_list = False
+            if line.startswith("正在"):
+                out.append('<div style="margin:6px 0; color:#8ab4f8;">'
+                           f'✦ {self._inline_md(line)}</div>')
+            else:
+                out.append('<div style="margin:2px 0; color:#e8eaed;">'
+                           f'{self._inline_md(line)}</div>')
+        if in_list:
+            out.append("</div>")
+        return "".join(out)
 
     def _ai_block(self, index, item):
         meta = item.get("meta") or {}
@@ -907,23 +1146,34 @@ class ChatDock(QtWidgets.QWidget):
                 + "<br>".join(row for row in rows if row)
                 + '</td></tr></table>'
             )
-        safe = html.escape(item["text"]).replace("\n", "<br>")
+        safe = self._format_ai_text(index, item)
         return (
             '<div align="left" style="margin:12px 2px 14px 2px;">'
             f'<div style="margin-bottom:4px;">{header}{stats_link}</div>'
-            f'<div style="color:#f2f3f5; line-height:1.5; max-width:560px;">{safe}</div>'
-            f'{self._images_html(item["images"])}'
+            f'<div style="line-height:1.55; max-width:560px;">{safe}</div>'
+            f'{self._images_grid_html(index, item)}'
             + (f'<div style="margin-top:6px;">{details}</div>' if details else '')
             + '</div>'
         )
 
-    @staticmethod
-    def _system_block(item):
+    def _system_block(self, index, item):
+        """System/status entries (系统 / 执行计划 / 计划验证失败 / 取消执行…)
+        render as compact collapsible directory rows instead of dumping text."""
+        arrow = "▾" if item.get("sys_expanded") else "▸"
         label = html.escape(item["label"])
+        header = (
+            f'<a href="#sys-{index}" style="color:#8f96a3; text-decoration:none; font-size:12px;">'
+            f'{arrow} {label}</a>'
+        )
+        if not item.get("sys_expanded"):
+            return f'<div style="margin:8px 2px;">{header}</div>'
         text = html.escape(item["text"]).replace("\n", "<br>")
         return (
-            f'<div style="color:#8f96a3; font-size:12px; margin:8px 2px;">'
-            f'<span style="color:#6f7683;">{label}</span> {text}</div>'
+            '<div style="margin:8px 2px;">' + header +
+            '<table width="96%" cellspacing="0" cellpadding="0"><tr>'
+            '<td bgcolor="#17191d" style="padding:8px 12px; color:#aeb5c2; '
+            'font-size:12px; line-height:1.6;">'
+            + text + '</td></tr></table></div>'
         )
 
     @staticmethod
@@ -935,6 +1185,14 @@ class ChatDock(QtWidgets.QWidget):
 
     def _rerender_history(self):
         self.history.clear()
+        # register downloaded thumbnails so <img src="http…"> resolves locally
+        document = self.history.document()
+        for url, thumb in self._thumb_cache.items():
+            if isinstance(thumb, QtGui.QImage) and not thumb.isNull():
+                document.addResource(
+                    QtGui.QTextDocument.ResourceType.ImageResource,
+                    QtCore.QUrl(url), thumb,
+                )
         blocks = []
         for index, item in enumerate(self._rendered):
             if item["role"] == "user":
@@ -942,7 +1200,7 @@ class ChatDock(QtWidgets.QWidget):
             elif item["role"] == "ai":
                 blocks.append(self._ai_block(index, item))
             else:
-                blocks.append(self._system_block(item))
+                blocks.append(self._system_block(index, item))
         if blocks:
             self.history.setHtml("".join(blocks))
         self.history.verticalScrollBar().setValue(self.history.verticalScrollBar().maximum())
@@ -962,9 +1220,9 @@ class ChatDock(QtWidgets.QWidget):
             elapsed = int(time.monotonic() - self._busy_started)
             self.status.setText(f"生成回复中 · 已处理 {elapsed}s")
 
-    def _start_request(self, messages, callback, pre_search_query=""):
+    def _start_request(self, messages, callback):
         if self._thread is not None:
-            self._pending_request = (messages, callback, pre_search_query)
+            self._pending_request = (messages, callback)
             return
 
         provider = self.provider.currentText()
@@ -981,7 +1239,7 @@ class ChatDock(QtWidgets.QWidget):
 
         self._set_busy(True)
         self._thread = QtCore.QThread()
-        self._worker = _Worker(provider, model, key, base_url, messages, pre_search_query)
+        self._worker = _Worker(provider, model, key, base_url, messages)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.finished.connect(callback)
@@ -1107,9 +1365,11 @@ class ChatDock(QtWidgets.QWidget):
                 self._set_composer_focus(False)
             elif event.type() == QtCore.QEvent.Type.KeyPress:
                 if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
-                    if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
-                        return False
-                    self._send()
+                    if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+                        self._send()
+                        return True
+                    # plain Enter inserts a newline; Ctrl+Enter sends
+                    self.input.insertPlainText("\n")
                     return True
                 if (
                     event.key() == QtCore.Qt.Key_V
@@ -1119,6 +1379,11 @@ class ChatDock(QtWidgets.QWidget):
                     self._add_clipboard_image()
                     return True
         return super().eventFilter(watched, event)
+
+    def _insert_at(self):
+        """Insert the @ marker that pulls in the Painter context on send."""
+        self.input.insertPlainText("@")
+        self.input.setFocus()
 
     def _set_composer_focus(self, focused: bool) -> None:
         """Highlight the whole composer card while the chat input has focus."""
@@ -1160,9 +1425,6 @@ class ChatDock(QtWidgets.QWidget):
         if self.web_search_enabled.isChecked():
             search_hint = "\n\n[联网能力已启用：请按需使用当前模型提供商的官方 Web Search 工具；不要用搜索结果替代模型自身推理。]"
         enriched = "当前 Painter 上下文：\n" + context + search_hint + "\n\n用户请求：\n" + text
-        image_terms = r"(图片|图像|配图|参考图|素材图|图片素材|找图|看图|图片参考|image|images|photo|photos|reference)"
-        pre_search_query = text if self.web_search_enabled.isChecked() and __import__("re").search(image_terms, text, __import__("re").I) else ""
-
         if self._attachments:
             content = [{"type": "text", "text": enriched}]
             for item in self._attachments:
@@ -1177,7 +1439,7 @@ class ChatDock(QtWidgets.QWidget):
         else:
             self._messages.append({"role": "user", "content": enriched})
         self._append("你", text)
-        self._start_request(list(self._messages), self._done, pre_search_query)
+        self._start_request(list(self._messages), self._done)
 
     @QtCore.Slot(str, str, dict)
     def _done(self, state, text, meta=None):
@@ -1206,9 +1468,7 @@ class ChatDock(QtWidgets.QWidget):
             if (self.permission_mode.currentData() if hasattr(self, 'permission_mode') else self.execution_mode.currentData()) == 'auto':
                 self._auto_execute_if_safe(plan)
         else:
-            web = (meta or {}).get("web_results") or {}
-            images = [item.get("url") for item in web.get("images", []) if isinstance(item, dict) and item.get("url")]
-            self._append("AI", text, images=images[:6], meta=meta)
+            self._append('AI', text)
             fallback = self._fallback_plan_from_user_request()
             if fallback:
                 self._last_plan = fallback
@@ -1281,5 +1541,5 @@ class ChatDock(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, callback))
 
 
-def build_chat_dock(version_text="0.6.7"):
+def build_chat_dock(version_text="0.7.0"):
     return ChatDock(version_text)

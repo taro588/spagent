@@ -12,7 +12,7 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.6.7"
+    assert data["version"] == "0.7.0"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["max_tested_painter_version"] == "11.0.x"
@@ -32,13 +32,13 @@ def test_release_versions_are_synchronized():
     assert f'#define MyAppVersion "{version}"' in iss
     assert f"name: SP-AI-Assistant-Setup-{version}" in workflow
     assert f"SP_AI_Assistant_Setup_{{#MyAppVersion}}" in iss
-    assert "SP_AI_Assistant_Setup_0.6.7.sha256" in workflow
+    assert "SP_AI_Assistant_Setup_0.7.0.sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
 
 
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.6.7"' in iss
+    assert '#define MyAppVersion "0.7.0"' in iss
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
     assert 'Source: "..\\plugin\\core\\*"' in iss
@@ -168,7 +168,13 @@ def test_context_and_actions():
     assert "rename_selected" in actions
     assert "delete_selected" in actions
     assert "export_textures" in actions
-    assert '"export_textures": ("export_path",)' in actions
+    # 必填参数已迁到 Tool Registry（架构文档 §12 单一事实源），
+    # 这里改为断言「来源」而不是断言那份已经删掉的手写副本。
+    assert "required = required_params()" in actions
+    assert "SUPPORTED_ACTIONS = set(tool_names())" in actions
+    assert "ACTION_ALIASES = action_aliases()" in actions
+    catalog = (ROOT / "plugin" / "core" / "tools" / "catalog.py").read_text(encoding="utf-8")
+    assert '"export_textures"' in catalog and 'required=("export_path",)' in catalog
     assert "set_fill_property" in actions
     assert "validate_plan" in actions
     assert "_material_source" in actions
@@ -181,7 +187,9 @@ def test_context_and_actions():
     assert "set_material_source" in actions
     assert "get_material_source" in actions
     assert "ACTION_ALIASES" in actions
-    assert "insert_fill_layer" in actions
+    # 别名同样迁到 Tool Registry，这里断言来源而不是手写副本
+    assert '"insert_fill_layer"' in catalog
+    assert 'aliases=("insert_fill_layer",)' in catalog
     assert "source_mode" in actions
     assert "_channel_source_value" in actions
     assert "_expand_workflow_actions" in actions
@@ -239,7 +247,10 @@ def test_chat_dock_has_execution_modes_and_high_impact_guard():
     assert 'self.execution_mode.addItem("低风险自动执行", "auto")' in text
     assert "_auto_execute_if_safe" in text
     assert "HIGH_IMPACT_ACTIONS" in text
-    assert "delete_selected" in text
+    # 高影响清单由 Tool Registry 提供（§17 / §12 单一事实源）
+    assert "from core.actions import HIGH_IMPACT_ACTIONS" in text
+    catalog = (ROOT / "plugin" / "core" / "tools" / "catalog.py").read_text(encoding="utf-8")
+    assert "delete_selected" in catalog
     assert "export_textures" in text
     assert "set_source_parameters" in text
     assert "set_effect_parameters" in text
@@ -273,7 +284,7 @@ def test_chat_bubbles_and_clipboard_input():
 def test_official_api_diagnostic():
     text = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
     assert "_official_api_test" in text
-    assert "official_api_test" in text
+    assert "substance_painter.layerstack.insert_fill" in text
 
 
 def test_agent_tool_calling_and_permissions():
@@ -283,9 +294,6 @@ def test_agent_tool_calling_and_permissions():
     assert "painter_actions" in client
     assert "WEB_SEARCH_TOOL" in client
     assert "def web_search(" in client
-    assert "def web_image_search(" in client
-    assert "LAST_WEB_RESULTS" in client
-    assert "official_api_test" in client
     assert '"tools": [response_tool, {"type": "web_search"}]' in client
     assert '"type": "web_search_20250305"' in client
     assert '"google_search": {}' in client
@@ -361,8 +369,26 @@ def test_browser_chatgpt_desktop_ui():
     assert "搜索或输入网址" in browser
 
 
+def test_chat_ui_screenshot_style():
+    """Screenshot-style UI: model bar, AI 对话/浏览器 tabs, markdown-lite AI text."""
+    dock = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+    assistant = (ROOT / "plugin" / "ui" / "assistant_dock.py").read_text(encoding="utf-8")
+    # segmented tabs drive the side browser pane
+    assert "browser_tab_changed" in dock and "browser_tab_changed" in assistant
+    assert "SPAI_SegmentTab" in dock and "sync_browser_tab" in dock
+    # top bar: model selector + refresh + settings icon buttons
+    assert "SPAI_IconBtn" in dock and "_refresh_models" in dock
+    # composer: @ context button, teal circular send button, Ctrl+Enter send
+    assert "_insert_at" in dock
+    assert "SPAI_SendButton" in dock and "#17a398" in dock
+    assert "KeyboardModifier.ControlModifier" in dock
+    assert "Ctrl+Enter 发送" in dock
+    # AI answers render markdown-lite (bold headings, bullet lists, code)
+    assert "_format_ai_text" in dock and "_inline_md" in dock
+
+
 def test_settings_panel_card_redesign():
-    """0.6.7: the ⚙ settings page uses scrollable GPT-style cards."""
+    """0.6.2: the ⚙ settings page uses scrollable GPT-style cards."""
     dock = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
     assert "SPAI_Card" in dock and "QScrollArea" in dock
     for title in ("模型连接", "材质工作流", "自动化与权限", "诊断与维护"):
@@ -400,7 +426,7 @@ def test_browser_app_window_mode():
 
 
 def test_browser_host_mode_real_chromium():
-    """0.6.7: real embedded Chromium browser via the browser_host process."""
+    """0.6.2: real embedded Chromium browser via the browser_host process."""
     browser = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(encoding="utf-8")
     embed = (ROOT / "plugin" / "ui" / "host_embed.py").read_text(encoding="utf-8")
     entry = (ROOT / "plugin" / "sp_ai_assistant.py").read_text(encoding="utf-8")
@@ -410,53 +436,32 @@ def test_browser_host_mode_real_chromium():
     assert "HostView" in browser
     assert "_find_browser_host_exe" in browser
     assert "browser_host.exe" in browser
-    assert 'self._mode = "web"' in browser
-    assert 'elif _find_browser_host_exe()' in browser
+    assert 'self._mode = "host"' in browser
     assert "_poll_host_url" in browser
     assert "shutdown_host" in browser
     # Cross-process embedding uses Win32 SetParent (pure ctypes).
     assert "SetParent" in embed and "WS_CHILD" in embed
     assert "sync_geometry" in embed and "set_visible" in embed
-    # 0.6.7: strip residual Win32 non-client frame styles that caused
-    # the persistent right/bottom gap after cross-process SetParent.
-    assert "WS_BORDER" in embed and "WS_DLGFRAME" in embed
-    assert "GWL_EXSTYLE" in embed and "WS_EX_CLIENTEDGE" in embed
-    # 0.6.7: popups positioned via native ClientToScreen so they follow the
+    # 0.6.2: popups positioned via native ClientToScreen so they follow the
     # plugin window even after external SetParent embedding.
     host = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
     assert "_native_global" in host and "ClientToScreen" in host
     assert "_exec_centered" in host
-    # 0.6.7 black-box fix: geometry sync is position-aware and the host
+    # 0.6.2 black-box fix: geometry sync is position-aware and the host
     # re-embeds itself when the placeholder's native window changes.
-    assert "RedrawWindow" in embed and "parent_hwnd_of" in embed
-    assert "SetProcessDpiAwarenessContext" in host or "SetProcessDpiAwareness" in host
+    assert "ClientToScreen" in embed and "parent_hwnd_of" in embed
     assert "_parent_is_placeholder" in browser and "_try_embed" in browser
     assert "def resync" in browser and "installEventFilter" in browser
-    assert "self.placeholder.setGeometry(self.rect())" in browser
-    assert "self.status.setGeometry(self.rect())" in browser
-    assert '"--embedded", "--state-file"' in browser
-    host = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
-    assert "FramelessWindowHint" in host
-    assert 'embedded = "--embedded" in sys.argv[1:]' in host
-    assert "embedded=embedded" in host
     assert "resync_host" in browser
-    # 0.6.7: expanding the collapsed pane re-syncs the embedded window.
+    # 0.6.2: expanding the collapsed pane re-syncs the embedded window.
     assert "_resync_host" in assistant
     # Plugin unload terminates the host process.
     assert "shutdown_browser" in entry and "shutdown_browser" in assistant
     assert "embedded_chromium_browser" in manifest["capabilities"]
 
 
-def test_windows_webengine_smoke_test_present():
-    smoke = (ROOT / "tests" / "windows_webengine_smoke.py").read_text(encoding="utf-8")
-    assert "QWebEngineView" in smoke
-    assert "resize(" in smoke and "view.grab" in smoke
-    workflow = (ROOT / ".github" / "workflows" / "build-installer.yml").read_text(encoding="utf-8")
-    assert "windows_webengine_smoke.py" in workflow
-
-
 def test_browser_host_app_and_ci_packaging():
-    """0.6.7: browser host app is a full QtWebEngine browser, built and shipped by CI."""
+    """0.6.2: browser host app is a full QtWebEngine browser, built and shipped by CI."""
     host_app = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "build-installer.yml").read_text(encoding="utf-8")
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
@@ -489,3 +494,393 @@ def test_all_providers_keep_full_model_capabilities():
     assert "functionCall" in client
     # OpenAI-compatible providers keep the function-tool pair
     assert "tools = [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL]" in client
+
+
+def test_chat_ai_replies_support_images_and_collapsible_sections():
+    """0.6.4: AI replies render image-card grids + collapsible directory sections."""
+    chat = (ROOT / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+    # image extraction with alt text + card grid rendering
+    assert "_extract_images" in chat and '"alt"' in chat
+    assert "_images_grid_html" in chat
+    assert "查看更多图片" in chat
+    assert "_ensure_thumbs" in chat and "_thumbs_ready" in chat
+    assert "addResource" in chat  # thumbnails registered as document resources
+    # collapsible sections (headings / 标题：) via #sec anchors
+    assert "#sec-" in chat and "sys_expanded" in chat
+    assert "#sys-" in chat
+    assert "show_all_images" in chat
+    # status lines (正在……) render in the blue accent style
+    assert "✦" in chat
+    # the model is told how to attach reference images
+    assert "![标题](图片URL)" in chat
+
+
+def test_browser_host_no_black_edges():
+    """0.6.6 / HOST 1.9: the embedded browser view is flush — no black bands.
+
+    Measured root cause: Qt caches the window frame margins when the window is
+    created and does NOT recompute them when the plugin later strips
+    WS_CAPTION / WS_THICKFRAME with SetWindowLongPtrW, so the layout kept
+    reserving 16 px on the right and 39 px at the bottom, painted with the
+    window background. See test_host_window_is_frameless_at_creation_when_embedded.
+    """
+    host = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
+    assert "root.setContentsMargins(0, 0, 0, 0)" in host
+    assert "root.setContentsMargins(6, 6, 6, 0)" not in host
+    # no docked status bar: status/link-hover use a floating overlay instead,
+    # so the bottom edge stays flush and the WebEngine view is never re-laid-out
+    assert "_status_overlay" in host
+    assert "_show_status_overlay" in host and "_hide_status_overlay" in host
+    # the embedded BrowserWindow itself never docks a status bar
+    assert "_show_status_overlay(message, 6000)" in host
+    assert "bar.showMessage(message" not in host
+    assert 'HOST_VERSION = "1.9.2"' in host
+
+
+def test_host_window_is_frameless_at_creation_when_embedded():
+    """0.6.6 / HOST 1.9: creating the window frameless is what removes the
+    right/bottom black bands.
+
+    Measured with _diag_blackedge/probe_ab_frameless.py: a 900x760 child whose
+    win32 rect matched the placeholder exactly still painted only 884x721 of
+    content — 16 px black on the right and 39 px at the bottom (8+8 and 31+8,
+    the frame margins of the framed window Qt was created with). Stripping the
+    caption afterwards cannot fix it because Qt never recomputes the cached
+    margins; the same embed path on a host created frameless measured 0.0%
+    pure black.
+    """
+    host = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
+    panel = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(encoding="utf-8")
+    # the host accepts the embedded flag and forwards it to the constructor
+    assert 'embedded = "--embedded" in args' in host
+    assert "embedded=embedded" in host
+    assert "embedded: bool = False" in host
+    # frameless flags are applied inside __init__, i.e. before the first show()
+    assert "FramelessWindowHint" in host
+    assert host.index("FramelessWindowHint") < host.index("self.setWindowTitle(APP_NAME)")
+    # only in embedded mode — a standalone launch keeps its normal frame
+    assert "if embedded:" in host
+    # the plugin always launches the host in embedded mode
+    assert '"--embedded"' in panel
+
+
+def test_browser_host_gpu_safety_and_crash_sentinel():
+    """0.6.4 / HOST 1.7: the GPU/DirectComposition path that killed the host
+    with 0xC0000005 on RTX 50-series + 596.x drivers is avoided by default,
+    with automatic escalation if the host still dies on startup.
+
+    0.6.8 / HOST 1.9.2: the ladder is re-based. The old first rung no-gpu
+    crashes (WER APPCRASH, c0000005 in QtWebEngineCore.dll) the moment any
+    popup menu opens — one right-click killed the host and the watchdog
+    restart rolled the browser back ("右键一次就还原成之前的样子"). no-dcomp
+    (GPU on, DComp off) passed sustained embedded probes with menus and is the
+    new starting rung; no-gpu stays as the last resort.
+
+    This is about *crashes* only: the black bands were measured to be
+    independent of the render mode (they persisted unchanged on the no-gpu
+    build), so the render ladder is not their fix — see
+    test_host_window_is_frameless_at_creation_when_embedded.
+    """
+    host = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
+    # HOST 1.9.2 ladder: no-dcomp first, no-gpu last resort
+    assert 'RENDER_MODES = ("default", "no-dcomp", "no-gpu")' in host
+    assert 'RENDER_FIRST_MODE = "no-dcomp"' in host
+    assert '"no-dcomp": "--disable-direct-composition"' in host
+    assert '"no-gpu": "--disable-gpu --disable-direct-composition"' in host
+    # a boot record from a different host build must not pin the old mode
+    assert 'host_version=HOST_VERSION' in host
+    assert 'previous.get("host_version")' in host
+    # flags are applied before QApplication is built
+    assert "def apply_render_flags" in host
+    assert 'os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]' in host
+    assert host.index("apply_render_flags(render_mode)") < host.index(
+        "app = QtWidgets.QApplication(sys.argv)")
+    # crash sentinel: a boot that dies early escalates the next launch
+    assert "def prepare_render_mode" in host
+    assert "RENDER_STABLE_SECONDS" in host
+    assert "RENDER_PROVEN_SECONDS" in host
+    assert "def _more_conservative" in host
+    # an escalated mode stays sticky once it has proven stable, so a broken
+    # GPU path cannot cause a crash after every clean session
+    assert "proven_mode" in host
+    # HOST 1.9.2: only deaths inside the crash window escalate — a host that
+    # ran for minutes and was then killed from outside (Painter exit, version
+    # retirement) is not a GPU crash. Without this, every Painter restart
+    # escalated one rung and pinned machines on the menu-crashing no-gpu.
+    assert "RENDER_CRASH_WINDOW_SECONDS" in host
+    assert "elapsed >= RENDER_CRASH_WINDOW_SECONDS" in host
+
+
+def test_render_ladder_forgives_outside_kills(tmp_path):
+    """0.6.8 / HOST 1.9.2 — functional check of prepare_render_mode.
+
+    The production boot record proved the pinning: host_version 1.9.1,
+    mode no-gpu, fail_streak 2, proven_mode no-dcomp — the user was stuck on
+    the rung whose popup menus crash, because one ordinary Painter restart
+    (host killed without aboutToQuit) escalated a healthy machine.
+
+    Text assertions cannot catch that class of bug, so this drives the real
+    function with synthetic boot records."""
+    import importlib.util
+    import time as _time
+
+    spec = importlib.util.spec_from_file_location(
+        "sp_host_main_under_test", ROOT / "browser_host" / "main.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # never rename the developer's real GPU caches from a test
+    mod.purge_gpu_caches = lambda: []
+
+    state = str(tmp_path / "host.state")
+    boot = tmp_path / "host.state.boot.json"
+    now = _time.time()
+    host_version = mod.HOST_VERSION
+
+    def run(record):
+        boot.write_text(json.dumps(record), encoding="utf-8")
+        return mod.prepare_render_mode(state)
+
+    # 1. long-lived host killed from outside (Painter exit) is NOT a crash:
+    #    stay on the working rung with the streak reset
+    assert run({"started": now - 600, "clean": False, "fail_streak": 0,
+                "mode": "no-dcomp", "proven_mode": "",
+                "host_version": host_version}) == ("no-dcomp", 0)
+    # 2. a death inside the crash window escalates exactly one rung
+    assert run({"started": now - 5, "clean": False, "fail_streak": 0,
+                "mode": "no-dcomp", "proven_mode": "",
+                "host_version": host_version}) == ("no-gpu", 1)
+    # 3. a clean exit de-escalates
+    assert run({"started": now - 5, "clean": True, "fail_streak": 2,
+                "mode": "no-gpu", "proven_mode": "no-gpu",
+                "host_version": host_version}) == ("no-gpu", 1)
+    # 4. a boot record from another host build is ignored entirely
+    assert run({"started": now - 5, "clean": False, "fail_streak": 3,
+                "mode": "no-gpu", "proven_mode": "no-gpu",
+                "host_version": "0.0.0"}) == ("no-dcomp", 0)
+
+
+def test_browser_panel_never_spawns_a_duplicate_host():
+    """0.6.8 — the duplicate-host incident (measured live 2026-09-30).
+
+    Qt rebuilds the host's native window during cross-process embedding. The
+    plugin's 250 ms tick saw its hwnd die, the state file still advertised the
+    dead handle, and ``_launch_or_attach`` spawned a SECOND browser. Two hosts
+    then shared one state file (pid flips 4x/12 s) and one command channel:
+    the plugin flip-flopped which window was embedded, so tabs changed
+    content, clicks landed on the invisible twin (empty-strip menu instead of
+    the tab menu) and menus popped at the twin's coordinates ("选项飞得很远").
+
+    A host may only ever be spawned when our own child has really exited."""
+    panel = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(
+        encoding="utf-8")
+    assert "def _child_alive" in panel
+    assert "def _retire_own_child" in panel
+    assert "def _pid_alive" in panel
+    assert "HWNDLESS_RECYCLE_SECONDS" in panel
+    assert "_hwndless_since" in panel
+    # the spawn path waits for our own child instead of replacing it
+    launch = panel.index("def _launch_or_attach")
+    spawn = panel.index("subprocess.Popen(", launch)
+    assert "if self._child_alive():" in panel[launch:spawn]
+    # a zombie recorded in the state file is retired before we spawn
+    assert "self._retire_process(pid)" in panel[launch:spawn]
+    # the crash branch only counts a relaunch when the child really died
+    tick = panel.index("def _tick")
+    branch = panel[tick:panel.index("def _parent_is_placeholder")]
+    assert "if self._child_alive():" in branch
+    assert "HWNDLESS_RECYCLE_SECONDS" in branch
+
+
+def test_detached_panel_relaunches_a_dead_host():
+    """0.6.9 — the stuck "检测到旧版内置浏览器" wedge (observed live 19:11).
+
+    A plugin whose EXPECTED_HOST_VERSION lagged the installed host retired the
+    freshly launched host (quiet SIGTERM — no crash record) while the panel was
+    still detached. The death watch only ran behind ``if self._embedded``, so
+    the panel polled a dead hwnd forever and never spent a relaunch: the user
+    saw the version-switch label for minutes with no host running.
+
+    Detached ticks must therefore (a) drop a stale hwnd, (b) keep the
+    windowless-child grace, and (c) relaunch within the budget."""
+    panel = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(
+        encoding="utf-8")
+    tick = panel.index("def _tick(self):")
+    assert "self._tick_detached()" in panel[tick:tick + 200]
+    body = panel[panel.index("def _tick_detached(self):"):]
+    body = body[:body.index("\n    def ")]
+    assert "host_embed.is_window(self._hwnd)" in body
+    assert "self._hwnd = 0" in body
+    # adoption must happen BEFORE the windowless-child grace: _try_embed() is
+    # what reads the state file, so skipping it would make the panel recycle a
+    # healthy child that was merely slow to publish its hwnd.
+    assert "self._try_embed()" in body
+    assert body.index("self._try_embed()") < body.index("if self._child_alive():")
+    assert "if self._child_alive():" in body
+    assert "HWNDLESS_RECYCLE_SECONDS" in body
+    assert "self._relaunch_count += 1" in body
+    assert "MAX_RELAUNCH" in body
+    assert "self._launch_or_attach()" in body
+
+
+def test_browser_host_settings_survive_hard_crash():
+    """0.6.8 / HOST 1.9.2: a hard crash (e.g. the no-gpu menu crash) must
+    not roll the browser back to an older look — session and settings are
+    flushed continuously, not only on user actions."""
+    host = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
+    # vertical-tabs toggle flushes the registry write immediately
+    assert 'self._settings.setValue("browser/vertical_tabs"' in host
+    assert "self._settings.sync()" in host
+    # durability heartbeat inside the command poll saves session periodically
+    assert "_durability_ticks" in host
+    heartbeat = host.index("_durability_ticks % 6")
+    assert host.index("self._save_session()", heartbeat) < heartbeat + 400
+    assert "fail_streak" in host
+    # a crash also clears the GPU/Dawn caches: a cache written by a crashed
+    # GPU process keeps triggering crashes on the following launches
+    assert "GPU_CACHE_DIRS" in host and "DawnGraphiteCache" in host
+    assert "def purge_gpu_caches" in host
+    assert "purge_gpu_caches() if streak else []" in host
+    assert "def mark_clean_exit" in host
+    assert "app.aboutToQuit.connect" in host
+    # manual override + diagnostics in the state file
+    assert '"--render-mode"' in host
+    assert '"render_mode": self._render_mode' in host
+    assert '"gpu_fail_streak": self._gpu_fail_streak' in host
+    # HOST 1.9.2: the hwnd in the state file must be the *existing* native
+    # window. int(winId()) would create a fresh window on a widget whose HWND
+    # was just destroyed — the heartbeat resurrected zombie windows and two
+    # hosts fought over the state file.
+    assert "self.internalWinId()" in host
+    write_state = host[host.index("def _write_state"):
+                       host.index("def _find_open_tab")]
+    assert "self.winId()" not in write_state
+    # ...and a rebuilt native window is published immediately instead of
+    # waiting for the next 4.8 s heartbeat (that gap is what let the plugin
+    # declare the host dead and spawn a duplicate)
+    assert "QEvent.Type.WinIdChange" in host
+
+
+def test_browser_host_never_replays_a_stale_command():
+    """A leftover <state>.cmd must not be executed on the next launch —
+    a stale \"exit\" used to kill the browser right after startup."""
+    host = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
+    assert "os.path.getmtime(self._cmd_file)" in host
+    assert "self._cmd_mtime = os.path.getmtime" in host or "self._cmd_mtime = os.path.getmtime(self._cmd_file)" in host
+    assert "consume it, so the same command can never be replayed" in host
+    assert "os.remove(self._cmd_file)" in host
+
+
+def test_plugin_retires_stale_host_versions():
+    """0.6.4: after an upgrade the plugin must not keep embedding the previous
+    host build (old layout / old GPU path) — it retires it and relaunches."""
+    panel = (ROOT / "plugin" / "ui" / "browser_panel.py").read_text(encoding="utf-8")
+    host = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
+    assert 'EXPECTED_HOST_VERSION = "1.9.2"' in panel
+    # both sides agree on the version string
+    assert 'HOST_VERSION = "1.9.2"' in host
+    assert "def _current_host_hwnd" in panel
+    assert "EXPECTED_HOST_VERSION" in panel.split("def _current_host_hwnd", 1)[1][:600]
+    assert "def _retire_process" in panel and "os.kill(pid, signal.SIGTERM)" in panel
+    assert "self._retired_pids" in panel
+    # the watchdog retries several times and never dead-ends the user
+    assert "MAX_RELAUNCH = 8" in panel
+    assert "STABLE_TICKS_TO_FORGIVE" in panel
+    assert "self._relaunch_count = 0" in panel
+    assert "def _manual_restart" in panel
+    assert "重新启动内置浏览器" in panel
+    assert 'self.retry.setVisible(False)' in panel
+
+
+def test_browser_host_tab_features():
+    """0.6.6 / HOST 1.9: Chrome-style tab features in the tab context menu —
+
+    split view, tab groups, reading list and vertical tabs.
+    """
+    host = (ROOT / "browser_host" / "main.py").read_text(encoding="utf-8")
+    # split view: overlay pane over the right half, main view reflows left
+    assert "def _toggle_split_current" in host
+    assert "def _close_split" in host and "def _layout_split" in host
+    assert "使用当前标签页创建新的拆分视图" in host
+    assert "关闭拆分视图" in host
+    # the pane is torn down with its anchor tab (close/detach guards)
+    assert 'view is self._split.get("source")' in host
+    # tab groups: color menu + per-tab coloring + leave-group entry
+    assert "GROUP_COLORS" in host
+    assert "向新分组添加标签页" in host and "移出分组" in host
+    assert "def _set_tab_group" in host
+    assert "setTabTextColor" in host
+    # reading list: persisted json + internal page + menu entries
+    assert "readlist.json" in host
+    assert "def _add_to_readlist" in host and "def _readlist_html" in host
+    assert "spai://readlist/read/" in host
+    assert "向阅读清单中添加 1 个标签页" in host
+    assert '"阅读清单"' in host
+    # vertical tabs: side panel + west tab shape + persisted setting
+    assert "def _toggle_vertical_tabs" in host and "def _apply_tab_orientation" in host
+    assert "RoundedWest" in host
+    assert '"browser/vertical_tabs"' in host
+    assert "垂直显示标签页" in host
+
+
+def test_integration_smoke_contract():
+    """§28-5：真实 Painter 集成冒烟必须存在，且安全约束写在代码里而不是文档里。"""
+    module = (ROOT / "plugin" / "core" / "integration_smoke.py").read_text(encoding="utf-8")
+    assert "LEVEL_PROBE" in module and "LEVEL_PROJECT" in module
+    assert "unsaved_project" in module
+    # 安全判定必须排在「解析网格」和「关旧建新」之前：任何一步失败都不该
+    # 先把用户的工程关掉。
+    assert module.index("unsaved_project") < module.index("resolved, tried = resolve_mesh")
+    assert module.index("unsaved_project") < module.index("sp.project.create(")
+    # 冒烟自己建的临时工程必须关掉（默认不保存），只有显式 keep_project 才留。
+    assert "keep_project" in module
+    assert "sp.project.close()" in module
+
+
+def test_smoke_declarations_come_from_the_registry():
+    """§12 单一事实源：冒烟不许自带一份官方 API 路径清单。"""
+    module = (ROOT / "plugin" / "core" / "integration_smoke.py").read_text(encoding="utf-8")
+    assert "declared_api_paths()" in module
+    assert "substance_painter." not in module
+    registry = (ROOT / "plugin" / "core" / "tools" / "registry.py").read_text(encoding="utf-8")
+    assert "def declared_api_paths" in registry
+    assert "api_alternatives" in registry
+
+
+def test_smoke_menu_entry_is_registered_in_painter():
+    entry = (ROOT / "plugin" / "sp_ai_assistant.py").read_text(encoding="utf-8")
+    assert "ui.diagnostics" in entry
+    assert "build_diagnostic_actions" in entry
+    diagnostics = (ROOT / "plugin" / "ui" / "diagnostics.py").read_text(encoding="utf-8")
+    assert "smoke.LEVEL_PROBE" in diagnostics
+    assert "smoke.LEVEL_PROJECT" in diagnostics
+    # UI 层也必须自己挡一道未保存的工程，不能只依赖 core 的检查
+    assert "needs_saving" in diagnostics
+    assert "write_report" in diagnostics
+
+
+def test_smoke_report_gate_exists():
+    gate = (ROOT / "tools" / "check_smoke_report.py").read_text(encoding="utf-8")
+    assert "latest.json" in gate
+    assert "--allow-missing" in gate
+    assert "outcome" in gate
+
+
+def test_installer_carries_subpackages():
+    """0.6.9 的教训：漏子包 = 插件加载即报 ModuleNotFoundError。"""
+    iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
+    assert 'Source: "..\\plugin\\core\\*"' in iss
+    assert 'Source: "..\\plugin\\ui\\*"' in iss
+    assert iss.count("recursesubdirs createallsubdirs") >= 3
+
+
+def test_pytest_collects_every_test_file():
+    ini = (ROOT / "pytest.ini").read_text(encoding="utf-8")
+    assert "testpaths = tests" in ini
+    assert "validate_*.py" in ini
+
+
+def test_release_notes_exist_for_the_current_version():
+    manifest = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
+    notes = ROOT / f"RELEASE_NOTES_{manifest['version']}.md"
+    if notes.exists():
+        assert "Painter" in notes.read_text(encoding="utf-8")

@@ -30,13 +30,12 @@ user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.MoveWindow.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.BOOL]
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
 user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
-user32.RedrawWindow.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT), wintypes.HANDLE, wintypes.UINT]
+user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
 user32.GetAncestor.restype = wintypes.HWND
 user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
 user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 
 GWL_STYLE = -16
-GWL_EXSTYLE = -20
 WS_CHILD = 0x40000000
 WS_POPUP = 0x80000000
 WS_CAPTION = 0x00C00000
@@ -44,29 +43,13 @@ WS_THICKFRAME = 0x00040000
 WS_MINIMIZEBOX = 0x00020000
 WS_MAXIMIZEBOX = 0x00010000
 WS_SYSMENU = 0x00080000
-WS_BORDER = 0x00800000
-WS_DLGFRAME = 0x00400000
-WS_EX_DLGMODALFRAME = 0x00000001
-WS_EX_WINDOWEDGE = 0x00000100
-WS_EX_CLIENTEDGE = 0x00000200
 SW_HIDE = 0
 SW_SHOW = 5
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
-SWP_SHOWWINDOW = 0x0040
-RDW_INVALIDATE = 0x0001
-RDW_ERASE = 0x0004
-RDW_UPDATENOW = 0x0100
-RDW_ALLCHILDREN = 0x0080
-WS_CLIPCHILDREN = 0x02000000
-WS_CLIPSIBLINGS = 0x04000000
 
-_REMOVE_STYLE = (
-    WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX |
-    WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME
-)
-_REMOVE_EXSTYLE = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE
+_REMOVE_STYLE = WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
 
 
 def last_error() -> int:
@@ -91,33 +74,12 @@ def embed(child_hwnd: int, parent_hwnd: int) -> bool:
         if not user32.IsWindow(child) or not user32.IsWindow(parent):
             return False
         style = user32.GetWindowLongPtrW(child, GWL_STYLE)
-        # Strip all remaining top-level non-client styles.  WS_BORDER and
-        # WS_DLGFRAME are easy to miss and leave a persistent right/bottom
-        # gap after SetParent even when WS_CAPTION is already removed.
-        style = (style & ~_REMOVE_STYLE) | WS_CHILD | WS_CLIPSIBLINGS
+        style = (style & ~_REMOVE_STYLE) | WS_CHILD
         user32.SetWindowLongPtrW(child, GWL_STYLE, style)
-        exstyle = user32.GetWindowLongPtrW(child, GWL_EXSTYLE)
-        user32.SetWindowLongPtrW(child, GWL_EXSTYLE, exstyle & ~_REMOVE_EXSTYLE)
-        parent_style = user32.GetWindowLongPtrW(parent, GWL_STYLE)
-        if not (parent_style & WS_CLIPCHILDREN):
-            user32.SetWindowLongPtrW(parent, GWL_STYLE, parent_style | WS_CLIPCHILDREN)
-        # SetParent returns the *previous* parent HWND.  A top-level
-        # browser has no previous parent, so a successful call legitimately
-        # returns NULL.  Do not treat that NULL return value as failure.
-        # SetParent returns the previous parent HWND.  A top-level window
-        # normally has no previous parent, so NULL is a valid success result.
-        # The Win32 contract requires GetLastError() to distinguish NULL
-        # success from failure.
-        kernel32 = ctypes.windll.kernel32
-        kernel32.SetLastError(0)
-        previous_parent = user32.SetParent(child, parent)
-        last_error = int(kernel32.GetLastError())
-        if not previous_parent and last_error:
+        if not user32.SetParent(child, parent):
             return False
-        user32.SetWindowPos(
-            child, None, 0, 0, 0, 0,
-            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
-        )
+        user32.SetWindowPos(child, None, 0, 0, 0, 0,
+                            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
         user32.ShowWindow(child, SW_SHOW)
         return True
     except Exception:
@@ -136,12 +98,16 @@ def parent_hwnd_of(child_hwnd: int) -> int:
 
 
 def sync_geometry(child_hwnd: int, parent_hwnd: int) -> None:
-    """Force the host HWND to exactly cover the parent client rectangle.
+    """Resize AND reposition the embedded window to exactly fill the
+    placeholder widget.
 
-    The host and Painter are separate DPI-aware processes. Comparing screen
-    rectangles here is unsafe because Windows can virtualize coordinates
-    differently across DPI contexts. The parent's client size is the source
-    of truth; reapply it every time and invalidate the compositor frame.
+    Position matters as much as size: the earlier version only compared
+    dimensions, so after a sidebar collapse/expand the child could sit at a
+    stale offset inside the placeholder — the dark placeholder background
+    showed around the page as the reported "black box". The child is pinned
+    to the placeholder's client origin (0, 0) whenever either position or
+    size drifts; when everything already matches this is a cheap no-op, so
+    calling it on every timer tick is safe.
     """
     try:
         child = wintypes.HWND(int(child_hwnd))
@@ -151,15 +117,17 @@ def sync_geometry(child_hwnd: int, parent_hwnd: int) -> None:
             return
         width = max(1, rect.right - rect.left)
         height = max(1, rect.bottom - rect.top)
-        user32.SetWindowPos(
-            child, None, 0, 0, width, height,
-            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
-        )
-        user32.ShowWindow(child, SW_SHOW)
-        user32.RedrawWindow(
-            child, None, None,
-            RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN,
-        )
+        origin = wintypes.POINT(0, 0)
+        if not user32.ClientToScreen(parent, ctypes.byref(origin)):
+            return
+        child_rect = wintypes.RECT()
+        if user32.GetWindowRect(child, ctypes.byref(child_rect)):
+            same_size = ((child_rect.right - child_rect.left) == width
+                         and (child_rect.bottom - child_rect.top) == height)
+            same_pos = (child_rect.left == origin.x and child_rect.top == origin.y)
+            if same_size and same_pos:
+                return
+        user32.MoveWindow(child, 0, 0, width, height, True)
     except Exception:
         pass
 
