@@ -105,13 +105,26 @@ def _finish(spec, verifier_id: str, checks: list[dict], **extra) -> dict:
 
 
 def _api_evidence(checks: list[dict], result: Mapping[str, Any] | None) -> None:
-    """每个写操作都必须留下官方 API 证据（§18.1 不以「写文件成功」为准）。"""
+    """每个写操作都必须留下官方 API 证据（§18.1 不以「写文件成功」为准）。
+
+    证据有两种合法形态：
+
+    * ``api`` —— 单次官方调用的入口路径字符串；
+    * ``applied`` —— 适配层对「一个动作拆成多个官方调用」的回执列表，
+      每项自带 ``api`` 字段（例如几何遮罩拆成 mask_type / meshes / uv_tiles
+      三次调用）。
+
+    真机冒烟暴露过这个契约不一致：适配层回的是 ``applied``，校验器却只认
+    ``api``，于是 set_geometry_mask / add_levels / create_group 明明执行成功却
+    被判 api_evidence 失败。
+    """
     result = result or {}
+    evidence = result.get("api") or result.get("applied")
     _check(
         checks,
         "api_evidence",
-        bool(result.get("api")),
-        result.get("api") or "执行结果没有记录官方 API 入口",
+        bool(evidence),
+        evidence or "执行结果没有记录官方 API 入口",
     )
 
 
@@ -355,7 +368,9 @@ def _executor_result(spec, action, result, before, after):
     _api_evidence(checks, result)
     evidence = any(
         key in (result or {}) for key in ("uid", "name", "count", "status", "path",
-                                          "resource", "stack", "channels", "mode")
+                                          "resource", "stack", "channels", "mode",
+                                          "api", "applied", "target", "action",
+                                          "parameters", "channel", "value")
     )
     _check(checks, "result_reported", evidence,
            sorted((result or {}).keys()))

@@ -231,6 +231,21 @@ class FakeProject:
 
 
 # --------------------------------------------------------------- 模块组装
+def fake_color(r, g, b, color_space=None):
+    """模拟官方 `colormanagement.Color(r, g, b, color_space=None)`。
+
+    官方**没有 alpha**：多传的第 4 个位置参数会落到 `color_space` 上，随后在
+    `_to_private_color_space()` 处以
+    ``AttributeError: 'float' object has no attribute 'value'`` 失败。
+
+    真机冒烟正是抓到这里：桩原先写成 `lambda r, g, b, a:` 收 4 个参数，
+    把真机必然失败的调用放成了假绿灯。桩必须贴近真实签名，否则它只会骗自己。
+    """
+    if color_space is not None and not hasattr(color_space, "value"):
+        raise AttributeError("'float' object has no attribute 'value'")
+    return (r, g, b)
+
+
 def build_stub(with_scope=True, with_bake=True, project_open=False,
                needs_saving=False, painter_root=None):
     """装配一个 substance_painter 假模块。
@@ -302,8 +317,7 @@ def build_stub(with_scope=True, with_bake=True, project_open=False,
         SourceUniformColor=lambda color: ("uniform", color),
         SourceBitmap=lambda resource_id: ("bitmap", resource_id))
 
-    sp.colormanagement = types.SimpleNamespace(
-        Color=lambda r, g, b, a: (r, g, b, a))
+    sp.colormanagement = types.SimpleNamespace(Color=fake_color)
 
     stack = FakeStack()
     sp.textureset = types.SimpleNamespace(

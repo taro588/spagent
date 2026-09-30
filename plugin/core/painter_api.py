@@ -359,18 +359,26 @@ class PainterAPI:
             node.set_name(name)
         return node
 
-    def color(self, rgba: Sequence[float]):
-        """官方 `colormanagement.Color(r, g, b, a)`。"""
-        values = list(rgba) + [1.0] * (4 - len(rgba))
-        try:
-            return self._getattr_path("colormanagement.Color")(*values[:4])
-        except UnsupportedCapability:
-            return tuple(values[:4])
+    def color(self, rgb: Sequence[float]):
+        """官方 `colormanagement.Color(r, g, b, color_space=None)` —— **没有 alpha**。
 
-    def uniform_color_source(self, rgba: Sequence[float]):
+        真机冒烟实测的教训：把第 4 个分量当 alpha 传进去，它会落到 `color_space`
+        上，官方内部 `_to_private_color_space()` 随即以
+        ``AttributeError: 'float' object has no attribute 'value'`` 失败。
+        所以这里只取前三个分量。
+        """
+        values = [float(v) for v in rgb][:3]
+        values += [0.0] * (3 - len(values))
+        try:
+            return self._getattr_path("colormanagement.Color")(*values)
+        except UnsupportedCapability:
+            return tuple(values)
+
+    def uniform_color_source(self, rgb: Sequence[float]):
         """官方 `source.SourceUniformColor(colormanagement.Color)`。"""
         self.require("source.uniform_color")
-        return self.sp.source.SourceUniformColor(rgba if hasattr(rgba, "r") else self.color(rgba))
+        return self.sp.source.SourceUniformColor(
+            rgb if hasattr(rgb, "value_raw") else self.color(rgb))
 
     def bitmap_source(self, resource_id):
         """官方 `source.SourceBitmap(resource_id)`。"""

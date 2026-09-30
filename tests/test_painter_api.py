@@ -123,7 +123,14 @@ def make_module(painter_version=(11, 0, 0), api_version=(0, 3, 4), features=("al
         SourceBitmap=lambda resource_id: ("bitmap", resource_id),
     )
     sp.source = source
-    sp.colormanagement = types.SimpleNamespace(Color=lambda r, g, b, a: (r, g, b, a))
+    def _color3(r, g, b, color_space=None):
+        # 官方 Color 没有 alpha：多传的第 4 个位置参数会成为 color_space，
+        # 并以 AttributeError 失败。桩如实复现，避免假绿灯。
+        if color_space is not None and not hasattr(color_space, "value"):
+            raise AttributeError("'float' object has no attribute 'value'")
+        return (r, g, b)
+
+    sp.colormanagement = types.SimpleNamespace(Color=_color3)
 
     textureset = types.SimpleNamespace(
         get_active_stack=lambda: "stack",

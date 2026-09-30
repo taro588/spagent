@@ -152,27 +152,25 @@ def _parse_color(value):
         if len(text) in (6, 8):
             try:
                 parts = [int(text[i:i+2], 16) / 255.0 for i in range(0, len(text), 2)]
-                if len(parts) == 3:
-                    parts.append(1.0)
-                return sp.colormanagement.Color(*parts)
+                # 官方 colormanagement.Color(r, g, b, color_space=None) 只有 RGB +
+                # 色彩空间，没有 alpha。多出来的第 4 个分量会落到 color_space 上，
+                # 内部随即以 AttributeError: 'float' object has no attribute
+                # 'value' 失败（真机冒烟实测）。这里显式丢弃 alpha。
+                return sp.colormanagement.Color(*parts[:3])
             except ValueError:
                 pass
     if isinstance(value, (list, tuple)) and len(value) in (3, 4):
         vals = [float(v) for v in value]
         if max(vals) > 1.0:
             vals = [v / 255.0 for v in vals]
-        if len(vals) == 3:
-            vals.append(1.0)
-        return sp.colormanagement.Color(*vals)
+        return sp.colormanagement.Color(*vals[:3])
     if isinstance(value, dict):
         keys = ["r", "g", "b", "a"]
         if all(k in value for k in keys[:3]):
             vals = [float(value[k]) for k in keys if k in value]
             if max(vals) > 1.0:
                 vals = [v / 255.0 for v in vals]
-            if len(vals) == 3:
-                vals.append(1.0)
-            return sp.colormanagement.Color(*vals)
+            return sp.colormanagement.Color(*vals[:3])
     raise ActionError("颜色必须是 #RRGGBB/#RRGGBBAA、RGB(A) 数组或颜色对象。")
 
 
@@ -188,7 +186,7 @@ def _channel_source_value(channel_name, value):
         return _parse_color(value)
     if isinstance(value, (int, float)):
         v = max(0.0, min(1.0, float(value)))
-        return sp.colormanagement.Color(v, v, v, 1.0)
+        return sp.colormanagement.Color(v, v, v)
     if isinstance(value, (list, tuple, dict)) or (isinstance(value, str) and value.strip().startswith("#")):
         return _parse_color(value)
     raise ActionError(f"{channel_name} 通道的值必须是颜色、数值或 resource。")
@@ -403,7 +401,12 @@ def execute_plan(plan: dict, verify: bool = True,
                 )
                 node.set_name(_name(action.get("name"), "AI Group"))
                 created.append(node)
-                results.append({"action": kind, "name": node.get_name(), "uid": node.uid()})
+                results.append({
+                    "action": kind,
+                    "name": node.get_name(),
+                    "uid": node.uid(),
+                    "api": "substance_painter.layerstack.insert_group",
+                })
 
             elif kind == "add_mask":
                 if not created:
@@ -787,7 +790,20 @@ def execute_plan(plan: dict, verify: bool = True,
                     _set_public_params(current, action["parameters"], set(action["parameters"].keys()))
                     effect.set_parameters(current)
                 created.append(effect)
-                results.append({"action": kind, "target": node.get_name(), "uid": effect.uid()})
+                # 结果必须留下官方入口证据（§18.1）：校验器按 api_evidence 核对。
+                # 真机冒烟曾因为这里缺字段，把「执行成功」判成证据不足。
+                results.append({
+                    "action": kind,
+                    "target": node.get_name(),
+                    "uid": effect.uid(),
+                    "inserted": True,
+                    "api": {
+                        "add_anchor_point": "substance_painter.layerstack.insert_anchor_point_effect",
+                        "add_color_selection": "substance_painter.layerstack.insert_color_selection_effect",
+                        "add_compare_mask": "substance_painter.layerstack.insert_compare_mask_effect",
+                        "add_levels": "substance_painter.layerstack.insert_levels_effect",
+                    }[kind],
+                })
 
             elif kind == "texture_stack_select":
                 requested = str(action["stack"]).strip()

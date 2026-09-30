@@ -120,3 +120,85 @@ def test_resource_import_accepts_human_usage_names(painter):
                      "path": "C:/tex/copper.png", "usage": "BASE_MATERIAL"}],
     }, verify=False)
     assert _entry(result, "resource_import_project")["resource"] == "imported"
+
+
+# ----------------------------------------------------------------------
+# 真机冒烟抓到的回归（2026-09-30，Painter 11.0.0.4202 / 官方 API 0.3.4）
+#
+# 假 Painter 桩原来把 Color 写成 `lambda r, g, b, a:`（收 4 个参数），于是三个
+# 核心单通道写入在单元测试里全绿、在真机上全炸：
+#     AttributeError: 'float' object has no attribute 'value'
+# 根因是官方 Color 只有 (r, g, b, color_space=None) —— 第 4 个分量落到 color_space
+# 上，内部 _to_private_color_space() 随即取 .value 失败。
+# 下面几条把「桩贴近真实签名 + 不许再传第 4 个分量」钉死。
+# ----------------------------------------------------------------------
+
+
+def test_parse_color_never_passes_more_than_three_components(painter):
+    samples = [
+        "#ff0000",            # #RRGGBB
+        "#ff000080",          # #RRGGBBAA（alpha 必须被丢弃）
+        [1.0, 0.0, 0.0],      # RGB 数组
+        [1.0, 0.0, 0.0, 1.0],  # RGBA 数组
+        [255, 0, 0],
+        {"r": 1.0, "g": 0.0, "b": 0.0},
+        {"r": 1.0, "g": 0.0, "b": 0.0, "a": 0.5},
+    ]
+    for raw in samples:
+        color = painter.actions._parse_color(raw)
+        assert len(color) == 3, "颜色写法 %r 传了 %d 个分量" % (raw, len(color))
+
+
+def test_single_channel_numbers_use_three_component_color(painter):
+    for value in (0.0, 0.35, 1.0):
+        color = painter.actions._channel_source_value("Roughness", value)
+        assert len(color) == 3, "数值 %r 传了 %d 个分量" % (value, len(color))
+
+
+def test_three_core_channel_writes_pass_a_real_signature_stub(painter):
+    """§28 点名的三个核心写入，在「按官方签名校验的桩」上必须全过。"""
+    result = painter.actions.execute_plan({
+        "operation_domain": "material",
+        "actions": [
+            {"action": "create_fill_layer", "name": "smoke"},
+            {"action": "set_base_color", "value": [0.15, 0.45, 0.75, 1.0]},
+            {"action": "set_roughness", "value": 0.35},
+            {"action": "set_metallic", "value": 0.0},
+        ],
+    }, verify=False)
+    assert result["success"] is True
+    for kind in ("set_base_color", "set_roughness", "set_metallic"):
+        assert _entry(result, kind)["api"], kind
+
+
+def test_applied_receipt_counts_as_api_evidence(painter):
+    """适配层对「一个动作拆成多个官方调用」回执 `applied`，校验器必须认它。
+
+    真机冒烟暴露过这个契约不一致：set_geometry_mask / add_levels / create_group
+    都执行成功，却因为结果里没有 `api` 字段被判 api_evidence 失败。
+    """
+    result = painter.actions.execute_plan({
+        "operation_domain": "material",
+        "actions": [
+            {"action": "create_fill_layer", "name": "masked"},
+            {"action": "set_geometry_mask", "parameters": {"type": "Mesh"}},
+        ],
+    })
+    report = result["verification"]
+    assert report["verified"] is True, report
+    assert report["failed"] == 0, report
+
+
+def test_effect_and_group_results_carry_api_evidence(painter):
+    """add_levels / create_group 的结果也必须带官方入口（§18.1）。"""
+    result = painter.actions.execute_plan({
+        "operation_domain": "material",
+        "actions": [
+            {"action": "create_fill_layer", "name": "x"},
+            {"action": "add_levels"},
+            {"action": "create_group", "name": "g"},
+        ],
+    })
+    assert _entry(result, "add_levels")["api"].endswith("insert_levels_effect")
+    assert _entry(result, "create_group")["api"].endswith("insert_group")
+    assert result["verification"]["failed"] == 0, result["verification"]
