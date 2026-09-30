@@ -12,53 +12,150 @@ from core.tools import painter_action_tool
 
 AI_CLIENT_BUILD = "0.6.0"
 
+# ---------------------------------------------------------------------------
+# Provider 能力矩阵（规格 §5 Provider Adapter / §4.2 Capability Router）
+#
+# 规格要求：每个 Provider 声明 capabilities，Master Agent 按能力路由而不是
+# 写死模型名。能力名与规格一致：
+#   vision            图片输入（参考图 / 材质分析）
+#   web_search        联网搜索（原生工具或搜索 API 兜底）
+#   image_search      图片搜索（返回可显示图片与来源；§6 MediaObject 管线接线后开放）
+#   image_generation  图像生成（§8 PBR 云端生成接线后开放）
+#   tool_calling      函数调用（painter_actions 已接到每条协议路径）
+#
+# 声明纪律：capability 只反映「本插件当前真能通过该 provider 走通的能力」，
+# 不反映「该 provider 理论上还有什么」。wire path 没接的能力一律不声明，
+# 否则按能力路由的上层会在没有实现的地方空转。
+# ---------------------------------------------------------------------------
+CAPABILITY_KEYS = ("vision", "web_search", "image_search", "image_generation",
+                    "tool_calling")
+
+# 给用户看的能力名（UI tooltip / 状态显示用）。
+CAPABILITY_LABELS = {
+    "vision": "图片输入",
+    "web_search": "联网搜索",
+    "image_search": "图片搜索",
+    "image_generation": "图像生成",
+    "tool_calling": "工具调用",
+}
+
 PROVIDERS = {
     "OpenAI": {
         "id": "openai",
         "base_url": "https://api.openai.com/v1",
         "models": ["gpt-5.6"],
+        "capabilities": {"vision", "web_search", "tool_calling"},
+        # 模型级覆盖：key 是模型名小写的子串，值为增量（add/remove）。
+        "model_capabilities": {},
     },
     "Anthropic": {
         "id": "anthropic",
         "base_url": "https://api.anthropic.com",
         "models": ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+        "capabilities": {"vision", "web_search", "tool_calling"},
+        "model_capabilities": {},
     },
     "Google Gemini": {
         "id": "gemini",
         "base_url": "https://generativelanguage.googleapis.com",
         "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+        "capabilities": {"vision", "web_search", "tool_calling"},
+        "model_capabilities": {},
     },
     "DeepSeek": {
         "id": "deepseek",
         "base_url": "https://api.deepseek.com",
         "models": ["deepseek-chat", "deepseek-reasoner"],
+        # 官方 chat/reasoner 均为纯文本模型；web_search 走 Bing 兜底函数。
+        "capabilities": {"web_search", "tool_calling"},
+        "model_capabilities": {},
     },
     "Kimi": {
         "id": "kimi",
         "base_url": "https://api.moonshot.cn/v1",
         "models": ["kimi-k2.5", "kimi-k2"],
+        # kimi-k2 系列为纯文本；moonshot 的视觉模型在 vl 线上（kimi-latest 等）。
+        "capabilities": {"web_search", "tool_calling"},
+        "model_capabilities": {"vl": {"add": ["vision"]}},
     },
     "Qwen": {
         "id": "qwen",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "models": ["qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus"],
+        # qwen3.x chat 系列为纯文本；换入 qwen-vl-* 视觉模型时按子串匹配放开。
+        "capabilities": {"web_search", "tool_calling"},
+        "model_capabilities": {"vl": {"add": ["vision"]}},
     },
     "GLM": {
         "id": "glm",
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "models": ["glm-5-turbo", "glm-5"],
+        # glm-5 系列为纯文本；GLM 的视觉模型在 glm-4v 线上。
+        "capabilities": {"web_search", "tool_calling"},
+        "model_capabilities": {"4v": {"add": ["vision"]}},
     },
     "MiniMax": {
         "id": "minimax",
         "base_url": "https://api.minimax.io/v1",
         "models": ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3"],
+        # M 系列为纯文本；MiniMax 的视觉模型走 vision 线（MiniMax-VL 等）。
+        "capabilities": {"web_search", "tool_calling"},
+        "model_capabilities": {"vl": {"add": ["vision"]}},
     },
     "OpenAI Compatible": {
         "id": "openai_compatible",
         "base_url": "http://localhost:1234/v1",
         "models": ["custom"],
+        # 本地服务的 wire path 支持图片（image_url content）；能否真用取决于
+        # 用户本地装的是什么模型 —— 这由用户自己判断，插件不做阻断。
+        "capabilities": {"vision", "web_search", "tool_calling"},
+        "model_capabilities": {},
     },
 }
+
+def provider_capabilities(provider_name: str, model: str = "") -> frozenset:
+    """该 provider（可细化到模型）当前真实可用的能力集合（规格 §5）。
+
+    模型级覆盖（model_capabilities）：key 是模型名小写的子串，命中即应用增量；
+    多个命中按声明顺序叠加。DeepSeek 的 chat/reasoner、Kimi 的 k2 等
+    provider 级就无视觉；Qwen/Kimi 等换入 *vl* 视觉模型时自动放开。
+    """
+    info = PROVIDERS.get(provider_name) or {}
+    caps = set(info.get("capabilities") or ())
+    model_key = str(model or "").lower()
+    if model_key:
+        for pattern, delta in (info.get("model_capabilities") or {}).items():
+            if pattern in model_key:
+                caps |= set(delta.get("add") or ())
+                caps -= set(delta.get("remove") or ())
+    return frozenset(caps)
+
+
+def supports(provider_name: str, capability: str, model: str = "") -> bool:
+    """按能力问询：当前选择（provider + 模型）能不能做这件事。"""
+    return capability in provider_capabilities(provider_name, model)
+
+
+def vision_gate(provider_name: str, model: str, has_images: bool):
+    """参考图视觉门：当前模型不支持图片输入时返回要给用户看的说明，否则 None。
+
+    为什么需要它：wire path 会把附件原样发给任何 provider，不支持视觉的模型
+    只会回一个难懂的服务端错误。按能力矩阵提前拦下，把「能换哪些模型」直接
+    告诉用户 —— 这是 §4.2 Capability Router 在单模型架构下今天就能兑现的部分。
+    """
+    if not has_images or provider_name not in PROVIDERS:
+        return None
+    if supports(provider_name, "vision", model):
+        return None
+    capable = [name for name in PROVIDERS
+               if "vision" in provider_capabilities(name)]
+    return (
+        "当前模型 %s（%s）不支持图片输入，参考图不会被发送。\n"
+        "支持视觉理解的模型：%s。\n"
+        "请先切换模型再发送；你的输入和参考图都已保留。"
+        % (model or "（未选择）", provider_name, "、".join(capable))
+    )
+
 
 WEB_SEARCH_TOOL = {
     "type": "function",

@@ -10,7 +10,9 @@ import time
 import urllib.request
 
 from core.actions import HIGH_IMPACT_ACTIONS, execute_plan, validate_plan
-from core.ai_client import AI_CLIENT_BUILD, PROVIDERS, LAST_USAGE, chat, web_search
+from core.ai_client import (AI_CLIENT_BUILD, PROVIDERS, LAST_USAGE,
+                            CAPABILITY_LABELS, chat, provider_capabilities,
+                            vision_gate, web_search)
 from core.painter_context import prompt_context
 from core.qt_compat import qt_modules
 from core.settings import provider_config, save_provider_config
@@ -66,7 +68,7 @@ class ChatDock(QtWidgets.QWidget):
 
     # True when the user activates the 浏览器 tab (show the side browser pane).
     browser_tab_changed = QtCore.Signal(bool)
-    def __init__(self, version_text="0.7.0"):
+    def __init__(self, version_text="0.7.1"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
@@ -467,7 +469,18 @@ class ChatDock(QtWidgets.QWidget):
         self.bottom_mode.currentIndexChanged.connect(self._sync_execution_mode)
 
         self.provider.currentTextChanged.connect(self._load_provider)
+        self.model.currentTextChanged.connect(self._refresh_capability_tooltip)
         self.model_badge.currentTextChanged.connect(self._sync_model_badge)
+
+    def _refresh_capability_tooltip(self, _model_name=None):
+        """把当前 provider+模型 的真实能力摆到模型选择器的 tooltip（§5）。"""
+        provider = self.provider.currentText()
+        if provider not in PROVIDERS:
+            return
+        caps = provider_capabilities(provider, self.model.currentText())
+        self.model.setToolTip(
+            "当前模型能力：%s" % ("、".join(CAPABILITY_LABELS.get(c, c)
+                                          for c in sorted(caps)) or "无"))
 
     def _toggle_settings(self):
         """GPT-style: the settings page replaces the conversation while open."""
@@ -524,6 +537,9 @@ class ChatDock(QtWidgets.QWidget):
         self.model_badge.addItems(info["models"])
         self.model_badge.setCurrentText(self.model.currentText())
         self.model_badge.blockSignals(False)
+        # 能力矩阵可见化（规格 §5）：加载 provider 时刷新一次；
+        # 切换模型由 currentTextChanged 再刷新。
+        self._refresh_capability_tooltip()
         self.status.setText("已读取本机配置" if config["api_key"] else "未配置 API Key")
 
     def _sync_bottom_mode(self, index):
@@ -1413,6 +1429,16 @@ class ChatDock(QtWidgets.QWidget):
         if not text or self._thread is not None:
             return
 
+        # 视觉门（规格 §4.2 Capability Router）：有参考图而当前模型不支持
+        # 图片输入时，提前拦下并告知可换的模型 —— 而不是把图发给一个必然
+        # 报错的服务端。被拦时输入与参考图都保留。
+        gate = vision_gate(self.provider.currentText(), self.model.currentText(),
+                           bool(self._attachments))
+        if gate:
+            self._append("系统", gate)
+            self.status.setText("✗ 当前模型不支持参考图，请切换模型")
+            return
+
         self._save()
         self.input.clear()
 
@@ -1541,5 +1567,5 @@ class ChatDock(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, callback))
 
 
-def build_chat_dock(version_text="0.7.0"):
+def build_chat_dock(version_text="0.7.1"):
     return ChatDock(version_text)

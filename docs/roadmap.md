@@ -98,6 +98,13 @@ AttributeError。对照本机官方声明文件（Python API 0.3.4 / Painter 11.
 2. **Provider Adapter 与能力矩阵（§5 / §4.2）**：给每个 provider 声明
    `capabilities`（vision / web_search / image_search / image_generation /
    tool_calling），Master Agent 按能力路由而不是写死模型名。
+   ✅ **已完成（0.7.1）**：能力矩阵落在 `ai_client.PROVIDERS`（声明纪律：
+   只声明 wire path 真接通的能力，未接线的 image_search / image_generation
+   全员不虚报），查询 API `provider_capabilities` / `supports` 供未来
+   Master Agent 路由；`vision_gate` 在发送前拦下「带参考图 + 文本模型」
+   并给出可换模型清单；模型选择器 tooltip 实时显示当前能力。
+   `model_capabilities` 支持模型级覆盖（qwen-vl / kimi vl / glm-4v 自动放开
+   vision）。事实由 `tests/test_ai_capabilities.py`（8 项）锁定并证伪过。
 3. **MediaObject 与搜索管线（§6）**：搜索结果结构化 + 本地缓存 + 来源许可，
    图片进入 Vision。
 4. **PBR 生成与质量门（§8 / §9）+ Asset Registry（§10）**。
