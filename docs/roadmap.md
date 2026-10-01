@@ -9,7 +9,7 @@
 | 3 | 实现 Tool Registry，每个 Tool 都有 executor + verifier | ✅ 已完成 | `plugin/core/tools/`；64 条工具，1:1 对齐由测试强制 |
 | 4 | 完成 `create_fill_layer` / `set_base_color` / `set_roughness` / `set_metallic` / `set_material_source` / `resource.import` 等核心真实操作 | ✅ 已完成 | 见 `docs/tool-registry.md`；语义化单通道工具已补齐 |
 | 5 | 用真实 Painter 项目做集成测试 | ✅ 已完成 | `plugin/core/integration_smoke.py`（Painter 的 Window 菜单入口）：只读探测 + 临时工程端到端；报告落盘 JSON，`tools/check_smoke_report.py` 做门禁（见 `docs/integration-smoke.md`） |
-| 6 | 再接 PBR、搜索、视觉和多 Agent | 🟡 部分完成 | 搜索/图片/视觉矩阵/PBR 已接（0.7.0–0.7.4）；多 Agent 未开工 |
+| 6 | 再接 PBR、搜索、视觉和多 Agent | ✅ 全部已接 | 搜索/图片/视觉矩阵/PBR（0.7.0–0.7.4）；Master Agent 编排+错误重路由（0.7.6） |
 | 7 | 最后做安装器、UI、黑边、缓存、错误恢复和发布验收 | 🟡 部分完成 | 0.6.4–0.6.8 已修掉黑边、插件常驻、双 host 互殴、GPU 档位崩溃；缓存/错误恢复/发布验收未系统化 |
 
 ## 已完成（本轮）
@@ -148,3 +148,14 @@ AttributeError。对照本机官方声明文件（Python API 0.3.4 / Painter 11.
    实际执行过的 12 条能力已按执行回执标记，集合由回归测试锁死
    （`test_executed_set_is_exactly_the_real_machine_smoke_evidence`），
    冒烟报告 `api_surface.capabilities.executed` 会持续显示执行覆盖度。
+7. **多 Agent（§4.1 / §4.3）**：Master Agent 编排 + Specialist 角色 +
+   失败按错误类型重新路由（§21 标准化）。
+   ✅ **已完成（2026-10-01，0.7.6）**：`core/orchestrator.py` 纯逻辑编排层
+   （§4.3 七个 Specialist 角色定义、§21 `classify_error` 八类错误标准化、
+   §4.1 `reroute_decision` 分类重路由——auth/quota 立即换家、瞬时故障
+   先重试再换家、内容拦截只降级、硬顶 2 次绝不盲目重复；`plan_steps`
+   材质目标展开 §20 端到端模板，每步带验证标准与并行组）；chat_dock
+   失败分支接自动重路由（换家时 Key/模型/base_url 自动带过去并重发，
+   对话框明示分类与去向）。257 项测试全绿，证伪三处如实红。
+   剩余：`plan_steps` 是规则模板版；「Reasoning 模型动态拆解任意目标」
+   的完全体需真机多模型会话验证。

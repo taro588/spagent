@@ -12,7 +12,7 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.7.5"
+    assert data["version"] == "0.7.6"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["max_tested_painter_version"] == "11.0.x"
@@ -32,13 +32,13 @@ def test_release_versions_are_synchronized():
     assert f'#define MyAppVersion "{version}"' in iss
     assert f"name: SP-AI-Assistant-Setup-{version}" in workflow
     assert f"SP_AI_Assistant_Setup_{{#MyAppVersion}}" in iss
-    assert "SP_AI_Assistant_Setup_0.7.5.sha256" in workflow
+    assert "SP_AI_Assistant_Setup_0.7.6.sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
 
 
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.7.5"' in iss
+    assert '#define MyAppVersion "0.7.6"' in iss
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
     assert 'Source: "..\\plugin\\core\\*"' in iss
@@ -913,7 +913,7 @@ def test_image_cards_render_inline_in_chat():
 
 
 def test_transaction_and_task_state_wired():
-    """0.7.5：规格 §16/§19 落地的静态锁。
+    """0.7.6：规格 §16/§19 落地的静态锁。
 
     - transaction.py 不 import substance_painter（纯编排层，CI 可测）
     - painter_api 有按 uid 反查删除的白名单回放能力
@@ -931,7 +931,7 @@ def test_transaction_and_task_state_wired():
 
 
 def test_transaction_and_task_state_wired():
-    """0.7.5：规格 §16/§19 落地的静态锁。
+    """0.7.6：规格 §16/§19 落地的静态锁。
 
     - transaction.py 不 import substance_painter（纯编排层，CI 可测）
     - painter_api 有按 uid 反查删除的白名单回放能力
@@ -946,3 +946,53 @@ def test_transaction_and_task_state_wired():
     assert 'Capability("layerstack.delete_node"' in api
     # 高风险=必须 checkpoint：HIGH_IMPACT_ACTIONS 直接来自 Registry 单一事实源
     assert "from core.tools.registry import HIGH_IMPACT_ACTIONS" in txn
+
+
+def test_master_agent_rerouting_wired():
+    """0.7.6：规格 §4.1/§21 编排层落地的静态锁。
+
+    - orchestrator.py 是纯逻辑层（不导入官方 SDK / Qt）
+    - chat_dock 失败分支接了重路由（classify → decision → 换家/重试）
+    - 换家走能力矩阵选已配置备选，绝不写死某一家
+    - 系统提示声明 Master Agent 编排职责（§4.1）
+    """
+    root = Path(__file__).resolve().parents[1]
+    orch = (root / "plugin" / "core" / "orchestrator.py").read_text(encoding="utf-8")
+    dock = (root / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+
+    assert "def classify_error" in orch
+    assert "def reroute_decision" in orch
+    assert "def pick_fallback_provider" in orch
+    assert "def plan_steps" in orch
+    assert "SPECIALISTS" in orch
+    # 失败分支必须先问重路由再展示错误
+    assert "if self._reroute(text):" in dock
+    assert "def _reroute(self, error_text):" in dock
+    assert "self._reroute_attempts = 0" in dock
+    assert "MAX_REROUTES" in orch
+    assert "你是 Master Agent" in dock
+
+
+def test_master_agent_rerouting_wired():
+    """0.7.6：规格 §4.1/§21 编排层落地的静态锁。
+
+    - orchestrator.py 是纯逻辑层（不导入官方 SDK / Qt）
+    - chat_dock 失败分支接了重路由（classify → decision → 换家/重试）
+    - 换家走能力矩阵选已配置备选，绝不写死某一家
+    - 系统提示声明 Master Agent 编排职责（§4.1）
+    """
+    root = Path(__file__).resolve().parents[1]
+    orch = (root / "plugin" / "core" / "orchestrator.py").read_text(encoding="utf-8")
+    dock = (root / "plugin" / "ui" / "chat_dock.py").read_text(encoding="utf-8")
+
+    assert "def classify_error" in orch
+    assert "def reroute_decision" in orch
+    assert "def pick_fallback_provider" in orch
+    assert "def plan_steps" in orch
+    assert "SPECIALISTS" in orch
+    # 失败分支必须先问重路由再展示错误
+    assert "if self._reroute(text):" in dock
+    assert "def _reroute(self, error_text):" in dock
+    assert "self._reroute_attempts = 0" in dock
+    assert "MAX_REROUTES" in orch
+    assert "你是 Master Agent" in dock

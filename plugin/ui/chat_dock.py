@@ -18,10 +18,13 @@ from core.ai_client import (AI_CLIENT_BUILD, PROVIDERS, LAST_USAGE, LAST_IMAGES,
 from core.painter_context import prompt_context
 from core.qt_compat import qt_modules
 from core.settings import provider_config, save_provider_config
+from core.orchestrator import (classify_error, reroute_decision,
+                               pick_fallback_provider)
 
 QtCore, QtGui, QtWidgets = qt_modules()
 
 SYSTEM_PROMPT = """你是 SP AI Assistant，运行在 Adobe Substance 3D Painter 内。
+你是 Master Agent（规格 §4.1）：负责理解用户目标、拆解任务并协调各专项能力——参考图搜索（image_search）、看图分析（vision）、云端 PBR 生成（pbr_generate，需用户已配置 FAL Key）、Painter 官方 API 操作（painter_actions）。你只做编排与回答，不编造其他 Agent 已完成的工作：每一步都以工具实际返回的结果为准，失败时说明原因并给出下一步，不盲目重复同一调用。
 你的职责是帮助用户进行游戏材质、PBR、Texture Set、图层、Mask、Generator、Filter 和导出工作。 可调用的受控动作包括 set_effect_parameters、set_source_parameters、texture_channel_add、bake_start、export_mesh、project_save 等。
 你可以读取当前 Painter 上下文。
 你仍然是完整的大模型助手：普通问答、推理、图片理解和联网搜索不需要调用 painter_actions。只有用户明确要求实际修改 Painter 时才调用 painter_actions。对于“修改当前选中 Fill Layer 的颜色/粗糙度/金属度/高度/投影/不透明度”等请求，必须针对当前选中节点生成实际修改动作，不能返回空 actions，也不能只解释操作方法。对于 Split 模式 Fill Layer，颜色等通道应使用 set_fill_property 或对应的实际 Painter API 参数；对于 Material/Substance 模式，先根据上下文中的 parameters 找到真实参数名，再用 set_source_parameters 修改。插件会立即调用 Painter 官方 Python API。不要告诉用户只能生成 JSON，也不要要求用户手动操作 Painter。
@@ -74,7 +77,7 @@ class ChatDock(QtWidgets.QWidget):
 
     # True when the user activates the 浏览器 tab (show the side browser pane).
     browser_tab_changed = QtCore.Signal(bool)
-    def __init__(self, version_text="0.7.5"):
+    def __init__(self, version_text="0.7.6"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
@@ -1565,6 +1568,7 @@ class ChatDock(QtWidgets.QWidget):
 
     def _send(self):
         self._execution_repair_attempts = 0
+        self._reroute_attempts = 0
         text = self.input.toPlainText().strip()
         workflow_options = {
             "web_search": bool(self.web_search_enabled.isChecked()),
@@ -1623,6 +1627,11 @@ class ChatDock(QtWidgets.QWidget):
         if state != 'ok':
             if self._messages and self._messages[-1].get('role') == 'user':
                 self._messages.pop()
+            # 规格 §4.1/§21：失败按标准错误类别重新路由，不盲目重复。
+            # 已达到重路由上限（MAX_REROUTES）就停，把分类与建议如实
+            # 展示给用户。
+            if self._reroute(text):
+                return
             self._append('错误', text)
             self.status.setText('✗ 请求失败')
             return
@@ -1654,6 +1663,61 @@ class ChatDock(QtWidgets.QWidget):
             else:
                 self.status.setText('⚠ AI 未返回可执行 Painter 工具调用，正在自动转换')
                 self._repair_plan_response(text)
+
+    def _reroute(self, error_text):
+        """失败重路由（规格 §4.1/§21）：按标准错误类别决定换家/重试/停。
+
+        返回 True 表示已安排自动重发（调用方不要再走错误展示分支）；
+        False 表示不重试，由调用方展示原始错误。每次 _send 重置计数，
+        单轮最多 MAX_REROUTES 次自动重路由——绝不盲目重复相同调用。
+        """
+        self._reroute_attempts = int(getattr(self, '_reroute_attempts', 0)) + 1
+        decision = reroute_decision(classify_error(error_text),
+                                     self._reroute_attempts)
+        action = decision["action"]
+        category = decision["category"]
+        if action == "abort":
+            return False
+        if action == "degrade":
+            self._append("系统", "请求被内容安全策略拦截（%s）。建议调整措辞后重发。" % category)
+            self.status.setText("✗ 内容被安全策略拦截")
+            return True
+
+        user_message = None
+        for message in reversed(self._messages):
+            if message.get("role") == "user":
+                user_message = message
+                break
+        if user_message is None:
+            return False  # 没有可重发的用户消息（连接测试等场景）
+
+        if action == "switch_provider":
+            current_id = (PROVIDERS.get(self.provider.currentText()) or {}).get("id", "")
+            fallback_name = pick_fallback_provider(current_id, "tool_calling",
+                                                   config_fn=provider_config)
+            if not fallback_name:
+                self._append("系统", "错误分类：%s。没有其他已配置 Key 的备选服务，"
+                                    "请配置另一家后重试。" % category)
+                self.status.setText("✗ 请求失败（%s），无可用备选" % category)
+                return True
+            fallback_id = PROVIDERS[fallback_name]["id"]
+            self.provider.setCurrentText(fallback_name)  # 触发 _load_provider 填 Key/模型
+            config = provider_config(fallback_id)
+            if not (config.get("model") or "").strip():
+                self._append("系统", "错误分类：%s。备选服务 %s 尚未选择模型，"
+                                    "已切换过去，请选好模型后重发。" % (category, fallback_name))
+                self.status.setText("✗ 已切换到 %s（未选模型）" % fallback_name)
+                return True
+            self._append("系统", "错误分类：%s。%s（已切换到 %s 自动重试）"
+                                % (category, decision["reason"], fallback_name))
+            self.status.setText("↻ 已重新路由到 %s 重试" % fallback_name)
+        else:  # retry_same：瞬时故障同家重试一次
+            self._append("系统", "错误分类：%s。%s" % (category, decision["reason"]))
+            self.status.setText("↻ 正在重试（%s）" % category)
+
+        self._messages.append(user_message)
+        QtCore.QTimer.singleShot(0, lambda: self._start_request(list(self._messages), self._done))
+        return True
 
     def _request_plan_validation_correction(self, plan, error_text):
         attempts = int(getattr(self, '_execution_repair_attempts', 0))
@@ -1717,5 +1781,5 @@ class ChatDock(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, callback))
 
 
-def build_chat_dock(version_text="0.7.5"):
+def build_chat_dock(version_text="0.7.6"):
     return ChatDock(version_text)
