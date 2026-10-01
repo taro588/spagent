@@ -2,6 +2,8 @@ from pathlib import Path
 import ast
 import json
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -12,7 +14,7 @@ def test_python_sources_parse():
 
 def test_manifest():
     data = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
-    assert data["version"] == "0.7.6"
+    assert data["version"] == "0.7.7"
     assert data["entry_point"] == "sp_ai_assistant.py"
     assert data["min_painter_version"] == "7.2.0"
     assert data["max_tested_painter_version"] == "11.0.x"
@@ -32,13 +34,13 @@ def test_release_versions_are_synchronized():
     assert f'#define MyAppVersion "{version}"' in iss
     assert f"name: SP-AI-Assistant-Setup-{version}" in workflow
     assert f"SP_AI_Assistant_Setup_{{#MyAppVersion}}" in iss
-    assert "SP_AI_Assistant_Setup_0.7.6.sha256" in workflow
+    assert "SP_AI_Assistant_Setup_0.7.7.sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
 
 
 def test_installer_payload():
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.7.6"' in iss
+    assert '#define MyAppVersion "0.7.7"' in iss
     assert 'Source: "..\\plugin\\sp_ai_assistant.py"' in iss
     assert 'Source: "..\\plugin\\manifest.json"' in iss
     assert 'Source: "..\\plugin\\core\\*"' in iss
@@ -783,7 +785,11 @@ def test_plugin_retires_stale_host_versions():
     # both sides agree on the version string
     assert 'HOST_VERSION = "1.9.2"' in host
     assert "def _current_host_hwnd" in panel
-    assert "EXPECTED_HOST_VERSION" in panel.split("def _current_host_hwnd", 1)[1][:600]
+    # 0.7.7 起 _current_host_hwnd 的 docstring 加了孤儿防护说明，
+    # 版本检查被推后；断言窗口放宽到函数体前 900 字符。
+    assert "EXPECTED_HOST_VERSION" in panel.split("def _current_host_hwnd", 1)[1][:900]
+    # 0.7.7 孤儿防护：adopt 前必须过进程门（真机故障回归）
+    assert "root_belongs_to_process(hwnd, os.getpid())" in panel
     assert "def _retire_process" in panel and "os.kill(pid, signal.SIGTERM)" in panel
     assert "self._retired_pids" in panel
     # the watchdog retries several times and never dead-ends the user
@@ -996,3 +1002,49 @@ def test_master_agent_rerouting_wired():
     assert "self._reroute_attempts = 0" in dock
     assert "MAX_REROUTES" in orch
     assert "你是 Master Agent" in dock
+
+
+def test_browser_module_untouched_without_browser_marker():
+    """用户纪律（2026-10-01 原话）：「每次新增或修改功能，别动浏览器的模块」。
+
+    机制化：改 plugin/ui/browser_panel.py / host_embed.py /
+    assistant_dock.py 的提交必须带 [browser] 标记——不带标记的功能
+    提交碰了这三个文件，本测试直接红。浏览器专项修复/维护显式声明
+    [browser] 后放行。基准 tag：v0.7.6（打 tag 后的每个版本都受保护）。
+    """
+    import subprocess
+
+    root = Path(__file__).resolve().parents[1]
+    protected = ["plugin/ui/browser_panel.py",
+                 "plugin/ui/host_embed.py",
+                 "plugin/ui/assistant_dock.py"]
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(root)] + list(args),
+                              capture_output=True, text=True, timeout=30)
+
+    manifest = json.loads((root / "plugin" / "manifest.json").read_text(encoding="utf-8"))
+    version = manifest["version"]
+    try:
+        major, minor, patch = (int(part) for part in version.split("."))
+    except ValueError:
+        pytest.skip("版本号非 x.y.z 形态，浏览器保护锁只在语义化版本下生效")
+    prev = "%d.%d.%d" % (major, minor, patch - 1) if patch > 0 else None
+    if prev is None:
+        pytest.skip("patch 段为 0，无上一版基准 tag")
+    if git("rev-parse", "v" + prev).returncode != 0:
+        pytest.skip("基准 tag v%s 不存在（首次引入本锁的版本）" % prev)
+
+    diff = git("diff", "--name-only", "v" + prev, "HEAD", "--", *protected)
+    touched = [line for line in diff.stdout.splitlines() if line.strip()]
+    if not touched:
+        return  # 干净：功能提交没碰浏览器模块
+
+    log = git("log", "v" + prev + "..HEAD", "--format=%s", "--", *protected)
+    subjects = [line.strip() for line in log.stdout.splitlines() if line.strip()]
+    assert subjects, "浏览器模块有改动但查不到提交记录"
+    illegal = [s for s in subjects if "[browser]" not in s]
+    assert not illegal, (
+        "以下提交改了浏览器模块但没带 [browser] 标记（用户纪律：功能开发"
+        "不得顺手改浏览器模块；浏览器专项改动必须显式声明）：\n"
+        + "\n".join(illegal))

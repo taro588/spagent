@@ -636,11 +636,18 @@ class HostView(QtWidgets.QWidget):
             return {}
 
     def _current_host_hwnd(self) -> int:
-        """HWND of a live host built by *this* plugin version, else 0.
+        """HWND of a live host built by *this* plugin version AND still owned
+        by *this* Painter process, else 0.
 
         An older host that survived an upgrade reports a different version; it
         is retired once so the freshly installed exe takes over (otherwise the
         session keeps running the previous layout / GPU path forever).
+
+        2026-10-01 补第二个门（孤儿防护）：Painter 异常退出时泄漏的 host
+        窗口根挂在残留的独立 dock 窗口上（属于已死进程），版本号仍是
+        1.9.2、窗口也有效——旧逻辑会把它当"可收编"adopt 进来，但它的
+        嵌入链永远回不到当前 Painter，用户看到的就是"浏览器模块消失"。
+        现在只收编根窗口属于当前进程的 host；孤儿一律退掉重启。
         """
         state = self._read_state()
         hwnd = int(state.get("hwnd") or 0)
@@ -653,6 +660,14 @@ class HostView(QtWidgets.QWidget):
                 self._retired_pids.add(pid)
                 self._retire_process(pid)
                 self.status.setText("检测到旧版内置浏览器，正在切换新版本……")
+                self.status.setVisible(True)
+            return 0
+        if not host_embed.root_belongs_to_process(hwnd, os.getpid()):
+            pid = int(state.get("pid") or 0)
+            if pid and pid not in self._retired_pids:
+                self._retired_pids.add(pid)
+                self._retire_process(pid)
+                self.status.setText("检测到上次会话残留的内置浏览器，正在重启……")
                 self.status.setVisible(True)
             return 0
         return hwnd

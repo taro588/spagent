@@ -144,3 +144,85 @@ def focus(child_hwnd: int) -> None:
         user32.SetForegroundWindow(wintypes.HWND(int(child_hwnd)))
     except Exception:
         pass
+
+
+# --------------------------------------------------------------------------
+# 0.7.7：孤儿 host/dock 泄漏防护（2026-10-01 真机故障）
+#
+# Painter 异常退出（崩溃/强杀）时 close_plugin 清理钩子不执行，
+# browser_host 进程与「SP AI Assistant」dock 顶层窗口双双泄漏
+# （实测残留窗口位于屏幕外负坐标区）。下次 Painter 启动时 HostView
+# 若按旧逻辑 adopt 这个孤儿 host，嵌入链挂在死掉的泄漏窗口上，
+# 浏览器永远回不来（用户视角：「浏览器模块又消失了」）。
+# 以下两个纯 ctypes 帮手支持「只收编属于当前进程的 host」与启动清扫。
+
+GA_ROOT = 2
+WM_CLOSE = 0x0010
+
+
+def window_process_id(hwnd: int) -> int:
+    """Owning process id of a window (0 on failure)."""
+    try:
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(wintypes.HWND(int(hwnd)),
+                                        ctypes.byref(pid))
+        return int(pid.value or 0)
+    except Exception:
+        return 0
+
+
+def root_belongs_to_process(hwnd: int, pid: int) -> bool:
+    """True when the ROOT window of ``hwnd`` belongs to process ``pid``.
+
+    嵌入后的 host 窗口 parent 链的根是 Painter 主窗口（属于当前进程）；
+    上次会话泄漏的孤儿 host 的根是残留的独立顶层窗口（属于已死进程）。
+    以此区分「同会话可收编」与「必须退掉重启」。
+    """
+    try:
+        root = user32.GetAncestor(wintypes.HWND(int(hwnd)), GA_ROOT)
+        if not root:
+            return False
+        # HWND 是 c_void_p 子类：int(hwnd实例) 会抛异常（真机证伪过），
+        # 必须取 .value；桩可能直接回 int，两者都兼容。
+        root_id = getattr(root, "value", root) or 0
+        return window_process_id(int(root_id)) == int(pid)
+    except Exception:
+        return False
+
+
+def close_foreign_toplevel_windows(title_contains: str, keep_pid: int) -> int:
+    """Close leaked top-level windows whose title contains ``title_contains``
+    but which belong to a process other than ``keep_pid``.
+
+    正常情况下插件 dock 是 Painter 主窗口的子部件，不存在同名顶层窗口；
+    因此任何「标题含插件名 + 属于别的进程」的顶层窗口都是上次会话泄漏
+    的空壳（可能还拖着孤儿 host），安全关闭并返回清理数量。
+    """
+    closed = [0]
+
+    def _enum_cb(hwnd, _lparam):
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = int(user32.GetWindowTextLengthW(hwnd) or 0)
+            if length <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            title = buf.value or ""
+            if title_contains not in title:
+                return True
+            if window_process_id(int(getattr(hwnd, "value", hwnd) or 0)) == int(keep_pid):
+                return True  # 自己进程的浮动 dock：不动
+            user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+            closed[0] += 1
+        except Exception:
+            pass
+        return True
+
+    try:
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows(WNDENUMPROC(_enum_cb), 0)
+    except Exception:
+        pass
+    return closed[0]

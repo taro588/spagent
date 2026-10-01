@@ -10,7 +10,7 @@ from core.qt_compat import qt_modules
 _widgets = []
 _dock = None
 _menu_actions = []
-PLUGIN_VERSION = "0.7.6"
+PLUGIN_VERSION = "0.7.7"
 MIN_PAINTER_VERSION = (7, 2, 0)
 
 
@@ -40,11 +40,34 @@ def _show_dock():
             pass
 
 
+def _sweep_leaked_dock_windows():
+    """0.7.7：启动清扫上次会话泄漏的 dock 顶层窗口。
+
+    Painter 异常退出时 close_plugin 不执行，「SP AI Assistant」dock
+    顶层窗口与 browser_host 进程会残留在屏幕外（真机实测：负坐标区，
+    孤儿 host pid 265888 / 窗口 18615934）。这些空壳不属于当前
+    Painter 进程，关掉零风险；不清理的话 HostView 的 adopt 链会挂在
+    死窗口上，表现为「浏览器模块消失」。
+    """
+    try:
+        from ui import host_embed
+
+        closed = host_embed.close_foreign_toplevel_windows(
+            "SP AI Assistant", os.getpid())
+        if closed:
+            _error_log("已清理上次会话泄漏的 dock 窗口 %d 个" % closed)
+    except Exception:
+        _error_log("dock 泄漏清扫失败:\n" + traceback.format_exc())
+
+
 def start_plugin():
     global _dock, _menu_actions
     if _dock is not None:
         _show_dock()
         return
+
+    # 先清残留，再建 UI——避免新会话 UI 挂到死窗口链上。
+    _sweep_leaked_dock_windows()
 
     painter_version = tuple(substance_painter.application.version_info())
     try:

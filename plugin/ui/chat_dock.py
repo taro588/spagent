@@ -77,7 +77,7 @@ class ChatDock(QtWidgets.QWidget):
 
     # True when the user activates the 浏览器 tab (show the side browser pane).
     browser_tab_changed = QtCore.Signal(bool)
-    def __init__(self, version_text="0.7.6"):
+    def __init__(self, version_text="0.7.7"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
@@ -1781,5 +1781,5 @@ class ChatDock(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, callback))
 
 
-def build_chat_dock(version_text="0.7.6"):
+def build_chat_dock(version_text="0.7.7"):
     return ChatDock(version_text)
