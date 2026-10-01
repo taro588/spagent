@@ -112,6 +112,7 @@ def make_module(painter_version=(11, 0, 0), api_version=(0, 3, 4), features=("al
         insert_smart_material=lambda position, identifier: FakeNode("smart-material"),
         insert_smart_mask=lambda position, identifier: FakeNode("smart-mask"),
         get_node_by_uid=lambda uid: [FakeNode("by-uid")],
+        delete_node=lambda node: None,
         set_selected_nodes=lambda nodes: None,
         create_smart_material=lambda group, name: {"identifier": name},
         create_smart_mask=lambda layer, name: {"identifier": name},

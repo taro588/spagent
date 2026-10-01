@@ -133,6 +133,14 @@ AttributeError。对照本机官方声明文件（Python API 0.3.4 / Painter 11.
    全绿，证伪三处如实红。
 5. **Transaction / Rollback 与 Task State Machine（§16 / §19）**：
    目前有 `ScopedModification`（缺失时显式降级），但没有 checkpoint 与回滚。
+   ✅ **已完成（2026-10-01，0.7.5）**：`core/transaction.py`（PRECHECK →
+   CHECKPOINT → APPLY → API VERIFY → COMMIT/ROLLBACK 全流程；高风险/
+   批量必须先落 checkpoint 快照；回滚分级如实——create 类按 UID 反查
+   删除走白名单、属性写入交 CORRECTOR、不可逆动作标 needs_manual
+   不虚报）；`core/task_state.py`（§19 十一态主线 + FAILED/WAITING_USER
+   分支 + resume 回原状态 + history 可序列化）；chat_dock 执行管线
+   已接事务包裹与任务状态推进；painter_api 增 UID 反查删除回放。
+   225 项测试全绿，证伪三处如实红。
 6. **Capability 表按真机结果收敛**：把冒烟暴露出来的缺失能力写回
    `painter_api.py` 的 `verified_on`，让「哪些能力在哪个版本可用」越跑越准。
    ✅ **已完成（2026-09-30）**：`Capability` 拆成 `verified_on`（真机探测到

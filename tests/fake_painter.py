@@ -302,6 +302,8 @@ def build_stub(with_scope=True, with_bake=True, project_open=False,
         get_root_layer_nodes=lambda stack: list(created),
         set_selected_nodes=lambda nodes: None,
         get_node_by_uid=lambda uid: [node for node in created if node.uid() == uid],
+        delete_node=lambda node: (created.remove(node)
+                                  if node in created else None),
         create_smart_material=lambda node, name: types.SimpleNamespace(
             identifier="project://smart-material/" + name,
             gui_name=lambda: name),

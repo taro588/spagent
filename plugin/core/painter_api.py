@@ -105,6 +105,9 @@ CAPABILITIES: Tuple[Capability, ...] = (
                executed_on=EXECUTED_AGAINST),
     Capability("layerstack.uid_lookup", "layerstack.get_node_by_uid",
                "§15 用 UID 定位图层（不依赖图层名）", verified_on=VERIFIED_AGAINST),
+    Capability("layerstack.delete_node", "layerstack.delete_node",
+               "§16 回滚时按节点对象删除（走官方白名单 API）",
+               verified_on=VERIFIED_AGAINST),
     Capability("layerstack.selection", "layerstack.set_selected_nodes",
                "设置选中节点", verified_on=VERIFIED_AGAINST,
                executed_on=EXECUTED_AGAINST),
@@ -424,6 +427,29 @@ class PainterAPI:
         """官方 `source.SourceEditorMixin.set_material_source(resource_id)`（§14）。"""
         self.require("source.material_source")
         return node.set_material_source(resource_id)
+
+    def delete_nodes_by_uids(self, uids) -> dict:
+        """§16 回滚反向回放：按 UID 反查节点后调用官方 ``delete_node``。
+
+        只走白名单语义（uid_lookup + delete_node），绝不执行任意 Python。
+        单个节点失败不阻断其余回放，失败原因进 ``errors``。
+        """
+        self.require("layerstack.uid_lookup")
+        self.require("layerstack.delete_node")
+        lookup = self._getattr_path("layerstack.get_node_by_uid")
+        delete = self._getattr_path("layerstack.delete_node")
+        reverted, errors = [], []
+        for uid in uids:
+            try:
+                node = lookup(uid)
+                if node is None:
+                    errors.append("UID %s 没有找到对应节点（可能已被删除）。" % uid)
+                    continue
+                delete(node)
+                reverted.append(uid)
+            except Exception as exc:
+                errors.append("UID %s 回放失败：%s: %s" % (uid, type(exc).__name__, exc))
+        return {"reverted": reverted, "errors": errors}
 
     def source_mode_name(self, node) -> str:
         mode = getattr(node, "source_mode", None)

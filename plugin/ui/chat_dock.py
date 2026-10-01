@@ -10,6 +10,8 @@ import time
 import urllib.request
 
 from core.actions import HIGH_IMPACT_ACTIONS, execute_plan, validate_plan
+from core.transaction import Transaction
+from core.task_state import Task, TaskStateError
 from core.ai_client import (AI_CLIENT_BUILD, PROVIDERS, LAST_USAGE, LAST_IMAGES,
                             CAPABILITY_LABELS, chat, provider_capabilities,
                             vision_gate, web_search)
@@ -72,7 +74,7 @@ class ChatDock(QtWidgets.QWidget):
 
     # True when the user activates the 浏览器 tab (show the side browser pane).
     browser_tab_changed = QtCore.Signal(bool)
-    def __init__(self, version_text="0.7.4"):
+    def __init__(self, version_text="0.7.5"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
@@ -685,27 +687,98 @@ class ChatDock(QtWidgets.QWidget):
                 self.status.setText("已取消执行")
                 return
 
+        # §16 事务编排：PRECHECK → CHECKPOINT → APPLY → VERIFY → COMMIT/ROLLBACK
+        from core.actions import API as _painter_api
+        from core.painter_context import snapshot as _snapshot
+
+        def _apply_inverse(ops):
+            uids = [op.get("uid") for op in ops if op.get("op") == "delete_node" and op.get("uid")]
+            return _painter_api.delete_nodes_by_uids(uids)
+
+        txn = Transaction(snapshot_fn=_snapshot, execute_fn=execute_plan,
+                          apply_inverse_fn=_apply_inverse)
+        self._task = Task(goal="执行 Painter 操作计划（%d 个动作）" % len(actions))
+        self._task_step("PLANNING", note="计划已通过安全验证")
+
         try:
-            result = execute_plan(plan)
-            self._last_execution = result
-            self._append("执行结果", json.dumps(result, ensure_ascii=False, indent=2))
-            verification = [
-                item for item in result.get("results", [])
-                if item.get("action") == "verify_last_created_parameters"
-            ]
-            failed = [item for item in verification if not item.get("verified", False)]
-            self._last_plan = None
-            if failed:
-                self._append("验证失败", json.dumps(failed, ensure_ascii=False, indent=2))
-                self.status.setText("⚠ 修改未完全生效，正在生成修正计划")
-                self._request_correction(plan, result)
-            else:
-                self.status.setText("✓ Painter 操作完成并通过验证")
+            txn_begin = txn.begin(plan)
+            if txn_begin["precheck"].get("requires_checkpoint"):
+                self._append("检查点", "高风险/批量操作已按规格 §16 建立检查点：%s"
+                             % (txn_begin["checkpoint"] or "内存快照"))
         except Exception as exc:
-            self.status.setText("✗ Painter 操作失败，正在请求 AI 修正")
-            error_text = f"{type(exc).__name__}: {exc}"
+            self._task_fail("PRECHECK 失败：%s" % exc)
+            self.status.setText("✗ 执行前检查失败：" + str(exc))
+            self._append("执行错误", "PRECHECK: %s" % exc)
+            return
+
+        self._task_step("EXECUTING")
+        result = txn.run(plan)
+        self._task_step("VERIFYING")
+
+        if not result.get("success", False):
+            # 执行器整体失败：先回滚可逆部分，再走既有 AI 修正管线
+            error_text = str(result.get("error") or "执行器未报告成功")
+            rollback = self._safe_rollback(txn, plan)
+            self._task_fail(error_text)
+            self.status.setText("✗ Painter 操作失败，已回滚可逆部分，正在请求 AI 修正")
             self._append("执行错误", error_text)
+            if rollback:
+                self._append("回滚", json.dumps(rollback, ensure_ascii=False, indent=2))
             self._request_execution_correction(plan, error_text)
+            return
+
+        self._last_execution = result
+        self._append("执行结果", json.dumps(result, ensure_ascii=False, indent=2))
+        verification = [
+            item for item in result.get("results", [])
+            if item.get("action") == "verify_last_created_parameters"
+        ]
+        failed = [item for item in verification if not item.get("verified", False)]
+        self._last_plan = None
+        verdict = txn.verify()
+        if failed or verdict.get("status") == "FAIL":
+            # FAIL → ROLLBACK → CORRECTOR（规格 §16）
+            rollback = self._safe_rollback(txn, plan)
+            self._task_step("CORRECTING")
+            self._append("验证失败", json.dumps(failed or verdict.get("failed", []), ensure_ascii=False, indent=2))
+            self.status.setText("⚠ 修改未完全生效，已回滚可逆部分，正在生成修正计划")
+            if rollback:
+                self._append("回滚", json.dumps(rollback, ensure_ascii=False, indent=2))
+            self._request_correction(plan, result)
+        else:
+            txn.commit()
+            self._task_step("COMPLETED")
+            self.status.setText("✓ Painter 操作完成并通过验证")
+
+    def _safe_rollback(self, txn, plan):
+        """回滚可逆部分；回滚自身出错不能吞掉主流程。"""
+        try:
+            rollback = txn.rollback(plan)
+            return rollback if rollback.get("reverted") else None
+        except Exception as exc:
+            self._append("回滚失败", str(exc))
+            return None
+
+    # ------------------------------------------------- §19 任务状态机（最小接线）
+    def _task_step(self, new_state, note=""):
+        """按 §19 状态机推进当前任务；非法迁移（如重复步骤）静默忽略——
+        状态机约束的是任务编排，不该把 UI 流程打断。"""
+        task = getattr(self, "_task", None)
+        if task is None:
+            return
+        try:
+            task.transition(new_state, note=note)
+        except TaskStateError:
+            pass
+
+    def _task_fail(self, reason):
+        task = getattr(self, "_task", None)
+        if task is None:
+            return
+        try:
+            task.fail(reason)
+        except TaskStateError:
+            pass
 
     def _request_execution_correction(self, plan, error_text):
         attempts = int(getattr(self, "_execution_repair_attempts", 0))
@@ -1644,5 +1717,5 @@ class ChatDock(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, callback))
 
 
-def build_chat_dock(version_text="0.7.4"):
+def build_chat_dock(version_text="0.7.5"):
     return ChatDock(version_text)
