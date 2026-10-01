@@ -6,6 +6,7 @@ import mimetypes
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from core.tools import painter_action_tool
 
@@ -20,7 +21,9 @@ AI_CLIENT_BUILD = "0.6.0"
 #   vision            图片输入（参考图 / 材质分析）
 #   web_search        联网搜索（原生工具或搜索 API 兜底）
 #   image_search      图片搜索（返回可显示图片与来源；§6 MediaObject 管线接线后开放）
-#   image_generation  图像生成（§8 PBR 云端生成接线后开放）
+#   image_generation  图像生成（§8：PBR 生成走独立 PATINA provider + fal key，
+#                      不经 chat provider 提供，因此矩阵对 chat provider 不声明；
+#                      pbr_generate 工具已接到全部四条协议路径）
 #   tool_calling      函数调用（painter_actions 已接到每条协议路径）
 #
 # 声明纪律：capability 只反映「本插件当前真能通过该 provider 走通的能力」，
@@ -203,6 +206,142 @@ IMAGE_SEARCH_TOOL = {
         }
     }
 }
+
+
+# PBR 生成工具（规格 §8/§9/§10）：执行端是 core.pbr（PATINA 客户端 +
+# 质量门）与 core.asset_registry（资产状态机），不进 Painter Registry。
+PBR_GENERATE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "pbr_generate",
+        "description": (
+            "生成一套 PBR 材质贴图（basecolor/normal/roughness/metalness/height，"
+            "无缝平铺）。三条路线：text_to_pbr 用文字描述生成；image_to_pbr 从"
+            "已有贴图/成品图预测 PBR 通道（需给 image）；extract 从照片中提取"
+            "目标材质并无缝化（需给 image）。结果自动过质量门并登记资产，"
+            "回执 markdown 字段是现成的展示片段，整段复制进回复即可。"
+            "需要配好 fal key 才能用。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "材质描述，如「风化旧铜，绿色铜锈，中等氧化，高粗糙度变化」"},
+                "route": {"type": "string", "enum": ["text_to_pbr", "image_to_pbr", "extract"],
+                          "description": "生成路线，默认 text_to_pbr"},
+                "image": {"type": "string", "description": "参考图/照片的本地路径（image_to_pbr 与 extract 必填）"},
+            },
+            "required": ["prompt"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def _run_pbr_generate(args: dict) -> dict:
+    """执行 pbr_generate 工具调用并返回回执 dict（规格 §8–§10 管线入口）。
+
+    完整闭环：缓存复用检查（§10）→ PATINA 生成（§8）→ 通道图下载 →
+    质量门（§9）→ 资产登记（GENERATED→DOWNLOADED→VALIDATED→REGISTERED）。
+    生成的 basecolor 图记进 LAST_IMAGES——就算模型不写 Markdown，
+    结果图也要显示在对话框里（0.7.3 的直显纪律同样适用）。"""
+    from core import pbr as _pbr
+    from core import asset_registry as _registry
+
+    prompt = str((args or {}).get("prompt") or "").strip()
+    route = str((args or {}).get("route") or "text_to_pbr")
+    image = str((args or {}).get("image") or "").strip()
+    if not prompt:
+        return {"error": "pbr_generate 的 prompt 不能为空"}
+    if route not in _pbr.PATINA_ROUTES:
+        return {"error": "未知路线 %r，可用：%s" % (route, ", ".join(_pbr.PATINA_ROUTES))}
+    if route in ("image_to_pbr", "extract") and not image:
+        return {"error": "路线 %s 需要提供 image（本地图片路径）" % route}
+    if image and not Path(image).exists():
+        return {"error": "参考图不存在：%s" % image}
+
+    fingerprint = _pbr.input_fingerprint(route, prompt, image)
+    registry = _registry.Registry()
+    reused = registry.find_reusable("patina", route, fingerprint)
+    if reused is not None:
+        receipt = _pbr_receipt(reused, reused=True)
+        _remember_pbr_preview(receipt)
+        return receipt
+
+    # fal 只收公网 URL 或 data URI；本地参考图在这里转成 data URI
+    image_url = image
+    if image:
+        try:
+            with open(image, "rb") as handle:
+                raw = handle.read(12 * 1024 * 1024)
+        except OSError as exc:
+            return {"error": "参考图读取失败：%s" % exc}
+        mime = mimetypes.guess_type(image)[0] or "image/png"
+        image_url = "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
+
+    try:
+        generated = _pbr.patina_generate(route, prompt, image_url=image_url)
+    except _pbr.PBRError as exc:
+        return {"error": str(exc), "prompt": prompt, "route": route}
+
+    asset = _registry.Asset(source=prompt, provider="patina", route=route,
+                            fingerprint=fingerprint,
+                            params={"request_id": generated.get("request_id"),
+                                    "model": generated.get("model")})
+    paths = _pbr.download_pbr_maps(generated)
+    if not paths:
+        asset.files = {}
+        registry.register(asset)
+        asset.transition("DOWNLOADED")
+        registry.mark_failed(asset.asset_id, "全部通道图下载失败")
+        return {"error": "生成成功但通道图下载失败（网络问题），可用相同参数重试",
+                "asset_id": asset.asset_id, "prompt": prompt, "route": route}
+    asset.files = paths
+    registry.register(asset)
+    registry.advance(asset.asset_id, "DOWNLOADED")
+
+    report = _pbr.validate_pbr_set(paths)
+    if not report.get("ok"):
+        registry.mark_failed(asset.asset_id, "质量门未通过：%s"
+                             % "; ".join(item.get("error", "") for item in report["failed"]))
+        receipt = {"asset_id": asset.asset_id, "state": asset.state,
+                   "prompt": prompt, "route": route,
+                   "quality": report,
+                   "error": "质量门未通过，详见 quality 字段；已保留资产可重试"}
+        return receipt
+    asset.compute_hashes()
+    registry.advance(asset.asset_id, "VALIDATED")
+    registry.advance(asset.asset_id, "REGISTERED")
+    receipt = _pbr_receipt(registry.get(asset.asset_id), reused=False)
+    _remember_pbr_preview(receipt)
+    return receipt
+
+
+def _pbr_receipt(asset, reused: bool) -> dict:
+    """把资产变成模型可读回执：状态、文件、质量报告、现成 markdown 片段。"""
+    from core import pbr as _pbr
+    base = asset.files.get("basecolor") or ""
+    markdown = ("![%s](%s)" % (asset.source[:40], base)) if base else ""
+    return {
+        "asset_id": asset.asset_id,
+        "state": asset.state,
+        "route": asset.route,
+        "prompt": asset.source,
+        "files": asset.files,
+        "reused": reused,
+        "markdown": markdown,
+        "hint": ("缓存命中，直接复用已验证资产。" if reused else
+                 "质量门已通过（确定性层）。把 markdown 字段整段复制进回复展示"
+                 "生成结果；quality.needs_vision 是仍需目视确认的语义检查项。"),
+        "quality": {"maps": asset.files, "hashes": asset.hashes},
+    }
+
+
+def _remember_pbr_preview(receipt: dict) -> None:
+    """生成结果图进 LAST_IMAGES（0.7.3 直显纪律：不依赖模型写 Markdown）。"""
+    for title, path_key in (("PBR BaseColor " + receipt.get("asset_id", ""), "basecolor"),):
+        path = (receipt.get("files") or {}).get(path_key)
+        if path and not any(item.get("url") == path for item in LAST_IMAGES):
+            LAST_IMAGES.append({"url": path, "alt": title[:80]})
 
 
 def _run_image_search(args: dict) -> dict:
@@ -456,6 +595,13 @@ def _openai_responses(messages, model, api_key, base_url):
                 "parameters": IMAGE_SEARCH_TOOL["function"]["parameters"],
                 "strict": False,
             },
+            {
+                "type": "function",
+                "name": "pbr_generate",
+                "description": PBR_GENERATE_TOOL["function"]["description"],
+                "parameters": PBR_GENERATE_TOOL["function"]["parameters"],
+                "strict": False,
+            },
         ]
 
     input_items = [
@@ -481,6 +627,7 @@ def _openai_responses(messages, model, api_key, base_url):
         )
         _record_usage(data)
         image_call = None
+        pbr_call = None
         for item in data.get("output", []) or []:
             if item.get("type") == "function_call" and item.get("name") == "painter_actions":
                 arguments = item.get("arguments") or "{}"
@@ -492,6 +639,23 @@ def _openai_responses(messages, model, api_key, base_url):
                     return json.dumps(plan, ensure_ascii=False)
             if item.get("type") == "function_call" and item.get("name") == "image_search":
                 image_call = item
+            if item.get("type") == "function_call" and item.get("name") == "pbr_generate":
+                pbr_call = item
+        if pbr_call is not None:
+            try:
+                pbr_args = json.loads(pbr_call.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                pbr_args = {}
+            pbr_result = _run_pbr_generate(pbr_args)
+            input_items = input_items + [
+                pbr_call,
+                {
+                    "type": "function_call_output",
+                    "call_id": pbr_call.get("call_id") or pbr_call.get("id"),
+                    "output": json.dumps(pbr_result, ensure_ascii=False),
+                },
+            ]
+            continue
         if image_call is not None:
             try:
                 args = json.loads(image_call.get("arguments") or "{}")
@@ -517,7 +681,7 @@ def _openai_responses(messages, model, api_key, base_url):
 
 def _openai_compatible(messages, model, api_key, base_url):
     normalized_messages = [{"role": m.get("role"), "content": _openai_message_content(m.get("content"))} for m in messages]
-    tools = [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL, IMAGE_SEARCH_TOOL]
+    tools = [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL, IMAGE_SEARCH_TOOL, PBR_GENERATE_TOOL]
     for _round in range(6):
         payload = {"model": model, "messages": normalized_messages, "tools": tools, "tool_choice": "auto"}
         headers = {"Content-Type": "application/json"}
@@ -550,6 +714,10 @@ def _openai_compatible(messages, model, api_key, base_url):
                 # 规格 §6：图片搜索走 MediaObject 管线，回执带本地缓存路径
                 result = _run_image_search(args)
                 normalized_messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": json.dumps(result, ensure_ascii=False)})
+            elif name == "pbr_generate":
+                # 规格 §8–§10：PBR 生成走 PATINA + 质量门 + 资产登记
+                result = _run_pbr_generate(args)
+                normalized_messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": json.dumps(result, ensure_ascii=False)})
         if painter_call is not None:
             return json.dumps(painter_call, ensure_ascii=False)
     raise AIError("工具调用超过最大连续轮次，请重新尝试。")
@@ -576,6 +744,12 @@ def _anthropic(messages, model, api_key, base_url):
             "name": "image_search",
             "description": IMAGE_SEARCH_TOOL["function"]["description"],
             "input_schema": IMAGE_SEARCH_TOOL["function"]["parameters"],
+        },
+        {
+            "type": "custom",
+            "name": "pbr_generate",
+            "description": PBR_GENERATE_TOOL["function"]["description"],
+            "input_schema": PBR_GENERATE_TOOL["function"]["parameters"],
         },
         {"type": "web_search_20250305", "name": "web_search", "max_uses": 5},
     ]
@@ -608,6 +782,11 @@ def _anthropic(messages, model, api_key, base_url):
             if isinstance(block, dict) and block.get("type") == "tool_use"
             and block.get("name") == "image_search"
         ]
+        pbr_uses = [
+            block for block in blocks
+            if isinstance(block, dict) and block.get("type") == "tool_use"
+            and block.get("name") == "pbr_generate"
+        ]
         for block in blocks:
             if (
                 isinstance(block, dict)
@@ -621,6 +800,20 @@ def _anthropic(messages, model, api_key, base_url):
                 break
         if painter_plan is not None:
             return painter_plan
+        if pbr_uses:
+            tool_results = []
+            for block in pbr_uses:
+                result = _run_pbr_generate(block.get("input") or {})
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.get("id"),
+                    "content": json.dumps(result, ensure_ascii=False),
+                })
+            payload_messages = payload_messages + [
+                {"role": "assistant", "content": blocks},
+                {"role": "user", "content": tool_results},
+            ]
+            continue
         if image_uses:
             tool_results = []
             for block in image_uses:
@@ -681,6 +874,11 @@ def _gemini(messages, model, api_key, base_url):
                             "description": IMAGE_SEARCH_TOOL["function"]["description"],
                             "parameters": IMAGE_SEARCH_TOOL["function"]["parameters"],
                         },
+                        {
+                            "name": "pbr_generate",
+                            "description": PBR_GENERATE_TOOL["function"]["description"],
+                            "parameters": PBR_GENERATE_TOOL["function"]["parameters"],
+                        },
                     ]
                 },
             ],
@@ -699,6 +897,7 @@ def _gemini(messages, model, api_key, base_url):
         parts = (candidates[0].get("content") or {}).get("parts") or []
         painter_plan = None
         image_calls = []
+        pbr_calls = []
         for part in parts:
             if not isinstance(part, dict):
                 continue
@@ -712,8 +911,24 @@ def _gemini(messages, model, api_key, base_url):
                 break
             if call.get("name") == "image_search":
                 image_calls.append(call)
+            if call.get("name") == "pbr_generate":
+                pbr_calls.append(call)
         if painter_plan is not None:
             return painter_plan
+        if pbr_calls:
+            contents = contents + [
+                {"role": "model", "parts": [{"functionCall": call} for call in pbr_calls]},
+                {"role": "user", "parts": [
+                    {
+                        "functionResponse": {
+                            "name": "pbr_generate",
+                            "response": _run_pbr_generate(call.get("args") or {}),
+                        }
+                    }
+                    for call in pbr_calls
+                ]},
+            ]
+            continue
         if image_calls:
             contents = contents + [
                 {"role": "model", "parts": [{"functionCall": call} for call in image_calls]},

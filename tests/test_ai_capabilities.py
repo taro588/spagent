@@ -65,7 +65,7 @@ def test_image_search_wire_exists_on_every_protocol_path():
     client = (Path(ROOT) / "plugin" / "core" / "ai_client.py").read_text(encoding="utf-8")
     assert '"name": "image_search"' in client  # IMAGE_SEARCH_TOOL schema 本体
     # OpenAI 兼容路径：function tools 清单
-    assert "tools = [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL, IMAGE_SEARCH_TOOL]" in client
+    assert "tools = [PAINTER_ACTION_TOOL, WEB_SEARCH_TOOL, IMAGE_SEARCH_TOOL, PBR_GENERATE_TOOL]" in client
     # OpenAI Responses 路径：_function_tools() 必须声明 image_search
     responses = client.split("def _openai_responses(")[1].split("def _openai_compatible(")[0]
     assert '"name": "image_search"' in responses, "Responses 路径缺 image_search wire"
@@ -209,3 +209,29 @@ def test_empty_query_receipt_has_no_markdown_side_effects():
     assert receipt["error"]
     assert "markdown" not in receipt
     assert ai_client.LAST_IMAGES == []
+
+
+def test_pbr_generate_wire_exists_on_every_protocol_path():
+    """pbr_generate 四条路径 wire 锁（规格 §8）。
+
+    证伪实录（2026-10-01）：剪断 Gemini 的 pbr_generate
+    functionDeclaration 后 13 项能力测试全绿——wire 锁只锁了
+    image_search，pbr_generate 的声明与接线之间同样裸奔。
+    这条测试逐路径钉死：schema 在、四条清单在、回执回传在。
+    """
+    from pathlib import Path
+    client = (Path(ROOT) / "plugin" / "core" / "ai_client.py").read_text(encoding="utf-8")
+    assert '"name": "pbr_generate"' in client  # PBR_GENERATE_TOOL schema 本体
+    assert "def _run_pbr_generate(" in client  # 执行器
+    # OpenAI 兼容路径：function tools 清单（上方 image_search 锁同款）
+    assert "PBR_GENERATE_TOOL" in client.split("def _openai_compatible(")[1].split("def _anthropic(")[0]
+    # OpenAI Responses 路径：_function_tools() 声明
+    responses = client.split("def _openai_responses(")[1].split("def _openai_compatible(")[0]
+    assert '"name": "pbr_generate"' in responses, "Responses 路径缺 pbr_generate wire"
+    # Anthropic 路径：custom tool 声明 + tool_result 回传
+    anthropic = client.split("def _anthropic(")[1].split("def _gemini(")[0]
+    assert '"name": "pbr_generate"' in anthropic, "Anthropic 路径缺 pbr_generate wire"
+    # Gemini 路径：functionDeclarations 声明 + functionResponse 回传（各至少 1 次）
+    gemini = client.split("def _gemini(")[1].split("def chat(")[0]
+    assert gemini.count('"name": "pbr_generate"') >= 2, (
+        "Gemini 路径缺 pbr_generate wire（声明或回执）")

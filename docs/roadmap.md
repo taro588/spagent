@@ -123,6 +123,14 @@ AttributeError。对照本机官方声明文件（Python API 0.3.4 / Painter 11.
    禁止只贴路径。锁在 `tests/test_chat_dock_images.py`（9 项）+ 能力
    测试 4 项，三处证伪全部如实红。
 4. **PBR 生成与质量门（§8 / §9）+ Asset Registry（§10）**。
+   ✅ **已完成（2026-10-01，0.7.4）**：`core/pbr.py`（PATINA 三条官方
+   路线 + Queue API + 五通道落盘 + §9 确定性质量门，语义项如实标
+   needs_vision；Key 走 DPAPI 安全层/环境变量，源码零硬编码）；
+   `core/asset_registry.py`（§10 八态状态机只进不跳、VALIDATED 前禁
+   导入、同指纹缓存复用、JSON 原子落盘）；`pbr_generate` 工具挂全
+   四条协议路径（wire 锁钉死——证伪发现旧 wire 锁只锁 image_search，
+   pbr 裸奔，已补锁）；生成图进 LAST_IMAGES 直显管线。203 项测试
+   全绿，证伪三处如实红。
 5. **Transaction / Rollback 与 Task State Machine（§16 / §19）**：
    目前有 `ScopedModification`（缺失时显式降级），但没有 checkpoint 与回滚。
 6. **Capability 表按真机结果收敛**：把冒烟暴露出来的缺失能力写回

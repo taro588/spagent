@@ -33,6 +33,7 @@ bake 只有在用户明确要求“烘焙/烘焙法线AO曲率”等，或明确
 材质工作流可选项：material、channels、parameters、smart_mask、generator、filter、bake、export_path、export_preset。没有用户要求的选项保持为空/false。
 完成材质制作后，如用户明确要求输出贴图，再使用 export_textures。
 你可以在回复中附带参考图片：使用 Markdown 图片语法 ![标题](图片地址)。需要找参考图时，优先调用 image_search 工具——它返回结构化结果，其中 local_path 是已缓存到本地的图片文件路径，把回执里现成的 markdown 字段整段复制进回复即可（不要自己编造 URL 或路径，也绝对禁止只把路径当纯文本输出——那样用户在对话框里看不到图）。用户提供的真实图片 URL 也可以直接使用。插件会把图片渲染成卡片网格（缩略图 + 标题 + 来源）。用户询问材质/贴图参考、搜索结果展示等场景应尽量带图，并在拿到图后基于图片内容给出分析（颜色、质感、磨损分布等），形成「搜索 → 图片显示 → 看图分析 → 材质意图」的完整回答。
+需要生成全新 PBR 材质（用户说「帮我做/生成一个XX材质贴图」且现有资源库里没有合适的）时调用 pbr_generate 工具：text_to_pbr 用文字描述生成一整套无缝 PBR 通道图（basecolor/normal/roughness/metalness/height）；用户给了参考贴图要走 image_to_pbr，给了实拍照片要提取材质走 extract（这两个路线必须把本地图片路径填进 image 参数）。回执里的 markdown 字段是现成的展示片段，整段复制进回复让用户看到生成结果，并基于 basecolor 图给出材质分析。生成结果已自动过质量门并登记资产，之后用户要求导入 Painter 时再生成导入计划。
 """
 # §17 权限模型：EXPORT / DANGEROUS 级别的工具在任何模式下都必须先确认。
 # 清单来自 Tool Registry（core.actions 再导出），不在这里维护第二份。
@@ -71,7 +72,7 @@ class ChatDock(QtWidgets.QWidget):
 
     # True when the user activates the 浏览器 tab (show the side browser pane).
     browser_tab_changed = QtCore.Signal(bool)
-    def __init__(self, version_text="0.7.3"):
+    def __init__(self, version_text="0.7.4"):
         super().__init__()
         self.setObjectName("SPAI_Assistant_Dock")
         self.setWindowTitle("SP AI Assistant")
@@ -1643,5 +1644,5 @@ class ChatDock(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, lambda: self._start_request(messages, callback))
 
 
-def build_chat_dock(version_text="0.7.3"):
+def build_chat_dock(version_text="0.7.4"):
     return ChatDock(version_text)
