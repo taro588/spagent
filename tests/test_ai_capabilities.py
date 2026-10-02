@@ -13,6 +13,8 @@ from __future__ import annotations
 import os
 import sys
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "plugin"))
 
@@ -23,6 +25,14 @@ from core.ai_client import (  # noqa: E402
     supports,
     vision_gate,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cache_dir(tmp_path, monkeypatch):
+    """image_search 现在会写统一缓存（规格 §22），测试必须落到临时目录——
+    否则会在本机真实的 %LOCALAPPDATA%\\SP AI Assistant\\cache 里留垃圾。"""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    yield
 
 
 # --------------------------------------------------------------- 矩阵完整性
@@ -209,6 +219,94 @@ def test_empty_query_receipt_has_no_markdown_side_effects():
     assert receipt["error"]
     assert "markdown" not in receipt
     assert ai_client.LAST_IMAGES == []
+
+
+# --------------------------------------------------- §22 缓存接线（必须锁）
+def test_image_search_hits_cache_on_second_identical_call(monkeypatch, tmp_path):
+    """规格 §22：搜索结果可缓存。同 query+条数第二次必须命中，不再发请求。"""
+    from core import ai_client, media
+
+    live = tmp_path / "shot.png"
+    live.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    calls = {"n": 0}
+
+    def _fake(query, limit):
+        calls["n"] += 1
+        receipt = _fake_receipt()
+        for item in receipt["results"]:
+            if item.get("local_path"):
+                item["local_path"] = str(live)
+        return receipt
+
+    monkeypatch.setattr(media, "search_images_cached", _fake)
+    ai_client.LAST_IMAGES.clear()
+
+    first = ai_client._run_image_search({"query": "铜锈", "max_results": 3})
+    second = ai_client._run_image_search({"query": "铜锈", "max_results": 3})
+
+    assert calls["n"] == 1, "第二次相同搜索不得再发网络请求（§22 缓存未生效）"
+    assert first["cache"] == "miss" and second["cache"] == "hit"
+    assert second["markdown"] == first["markdown"], "命中回执也要能直显图片"
+
+
+def test_image_search_cache_never_fakes_a_hit(monkeypatch, tmp_path):
+    """缓存命中必须诚实：本地缓存图不在了就当未命中重新搜，
+    否则用户会看到一张读不出来的图（假命中比慢更糟）。"""
+    from core import ai_client, media
+
+    live = tmp_path / "shot.png"
+    live.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    calls = {"n": 0}
+
+    def _fake(query, limit):
+        calls["n"] += 1
+        receipt = _fake_receipt()
+        for item in receipt["results"]:
+            if item.get("local_path"):
+                item["local_path"] = str(live)
+        return receipt
+
+    monkeypatch.setattr(media, "search_images_cached", _fake)
+    ai_client.LAST_IMAGES.clear()
+    ai_client._run_image_search({"query": "铜锈", "max_results": 3})
+    live.unlink()                                  # 缓存图被清掉
+    again = ai_client._run_image_search({"query": "铜锈", "max_results": 3})
+    assert calls["n"] == 2, "文件已不在，缓存不得假命中"
+    assert again["cache"] == "miss"
+
+
+def test_image_search_cache_key_includes_query_and_count(monkeypatch, tmp_path):
+    """不同 query 或不同条数是不同的缓存条目，不得互相命中。"""
+    from core import ai_client, media
+
+    seen = []
+
+    def _fake(query, limit):
+        seen.append((query, limit))
+        receipt = _fake_receipt()
+        receipt["results"] = [r for r in receipt["results"] if not r.get("local_path")]
+        return receipt
+
+    monkeypatch.setattr(media, "search_images_cached", _fake)
+    ai_client._run_image_search({"query": "铜锈", "max_results": 3})
+    ai_client._run_image_search({"query": "铁锈", "max_results": 3})
+    ai_client._run_image_search({"query": "铜锈", "max_results": 5})
+    assert seen == [("铜锈", 3), ("铁锈", 3), ("铜锈", 5)]
+
+
+def test_pbr_receipt_carries_resolution_plan():
+    """规格 §22：回执必须带分辨率决策（计划 + 理由），不许默默最高规格。"""
+    from core import ai_client, pbr, resolution
+
+    plan = resolution.plan("pc", requested=8192, texture_set=2048)
+    assert plan["final"] == 2048 and plan["capped"] is True
+    summary = resolution.describe(plan)
+    assert "2048×2048" in summary and "硬约束" in summary
+
+    # pbr_generate 的工具 schema 必须显式暴露 platform / resolution 两个开关
+    props = ai_client.PBR_GENERATE_TOOL["function"]["parameters"]["properties"]
+    assert "platform" in props and "resolution" in props
+    assert pbr.PATINA_ROUTES  # 三条路线仍在，避免本测试变成空跑
 
 
 def test_pbr_generate_wire_exists_on_every_protocol_path():

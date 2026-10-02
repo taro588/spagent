@@ -229,6 +229,14 @@ PBR_GENERATE_TOOL = {
                 "route": {"type": "string", "enum": ["text_to_pbr", "image_to_pbr", "extract"],
                           "description": "生成路线，默认 text_to_pbr"},
                 "image": {"type": "string", "description": "参考图/照片的本地路径（image_to_pbr 与 extract 必填）"},
+                "platform": {"type": "string",
+                             "enum": ["mobile", "game", "pc", "console", "film", "vfx", "archviz"],
+                             "description": "目标平台（规格 §22：分辨率按平台与工程决定，"
+                                            "不无条件生成最高规格）。默认 game"},
+                "resolution": {"type": "integer", "enum": [512, 1024, 2048, 4096, 8192],
+                               "description": "期望分辨率（长边像素）。只是期望值，"
+                                              "会被平台/工程/GPU 硬约束下调，回执 resolution_plan "
+                                              "里说明实际决策与理由"},
             },
             "required": ["prompt"],
             "additionalProperties": False,
@@ -246,6 +254,7 @@ def _run_pbr_generate(args: dict) -> dict:
     结果图也要显示在对话框里（0.7.3 的直显纪律同样适用）。"""
     from core import pbr as _pbr
     from core import asset_registry as _registry
+    from core import resolution as _resolution
 
     prompt = str((args or {}).get("prompt") or "").strip()
     route = str((args or {}).get("route") or "text_to_pbr")
@@ -259,11 +268,23 @@ def _run_pbr_generate(args: dict) -> dict:
     if image and not Path(image).exists():
         return {"error": "参考图不存在：%s" % image}
 
+    # 规格 §22：分辨率由平台/期望/工程/GPU 硬约束共同决定，绝不无条件最高。
+    # 计划只做决策与说明（PATINA 当前按服务端默认分辨率出图），回执里
+    # 给模型一份可读的 resolution_plan，UI/用户能看到成本决策理由。
+    platform = str((args or {}).get("platform") or "game").strip().lower()
+    requested = (args or {}).get("resolution")
+    try:
+        requested_px = int(requested) if requested else None
+    except (TypeError, ValueError):
+        requested_px = None
+    plan = _resolution.plan(platform, requested=requested_px)
+
     fingerprint = _pbr.input_fingerprint(route, prompt, image)
     registry = _registry.Registry()
     reused = registry.find_reusable("patina", route, fingerprint)
     if reused is not None:
         receipt = _pbr_receipt(reused, reused=True)
+        receipt["resolution_plan"] = plan
         _remember_pbr_preview(receipt)
         return receipt
 
@@ -300,18 +321,29 @@ def _run_pbr_generate(args: dict) -> dict:
     registry.advance(asset.asset_id, "DOWNLOADED")
 
     report = _pbr.validate_pbr_set(paths)
+    # 规格 §22：draft/final 两阶段纪律——质量门结论直接换算成「值不值得
+    # 升级」，回执里给模型明确的 promote_final 判定与理由。
+    promote_ok, promote_reason = _resolution.should_promote({
+        "passed": bool(report.get("ok")) and not report.get("failed"),
+        "failed": ["%s：%s" % (item.get("check"), item.get("error"))
+                   for item in report.get("failed") or []],
+    })
     if not report.get("ok"):
         registry.mark_failed(asset.asset_id, "质量门未通过：%s"
                              % "; ".join(item.get("error", "") for item in report["failed"]))
         receipt = {"asset_id": asset.asset_id, "state": asset.state,
                    "prompt": prompt, "route": route,
                    "quality": report,
+                   "resolution_plan": plan,
+                   "promote_final": {"ok": promote_ok, "reason": promote_reason},
                    "error": "质量门未通过，详见 quality 字段；已保留资产可重试"}
         return receipt
     asset.compute_hashes()
     registry.advance(asset.asset_id, "VALIDATED")
     registry.advance(asset.asset_id, "REGISTERED")
     receipt = _pbr_receipt(registry.get(asset.asset_id), reused=False)
+    receipt["resolution_plan"] = plan
+    receipt["promote_final"] = {"ok": promote_ok, "reason": promote_reason}
     _remember_pbr_preview(receipt)
     return receipt
 
@@ -347,21 +379,42 @@ def _remember_pbr_preview(receipt: dict) -> None:
 def _run_image_search(args: dict) -> dict:
     """执行 image_search 工具调用并返回回执 dict（规格 §6 管线入口）。
 
-    两件与显示强相关的副作用：
+    三件与显示/成本强相关的副作用：
+    - **缓存**（规格 §22）：同一 query+条数直接命中上次搜索的回执，
+      省一次网络请求；命中要求本地缓存图全部还在，缺一张就当未命中
+      重新搜——缓存不许给「图已经不在了」的假命中。
     - 回执附 markdown 字段：每张缓存成功的图一行现成的 ![标题](local_path)，
       模型整段复制进回复，图片就会显示在对话框里。
     - 把命中的本地缓存图记进 LAST_IMAGES，Chat UI 兜底附加显示——
       就算模型不听话只贴路径文本，图也得出现在对话里。
     """
     from core import media as _media
+    from core import cache as _cache
     query = (args or {}).get("query")
     max_results = (args or {}).get("max_results", 8)
     if not str(query or "").strip():
         return {"query": "", "error": "image_search 的 query 不能为空", "results": []}
-    try:
-        receipt = _media.search_images_cached(str(query), int(max_results or 8))
-    except Exception as exc:  # 兜底：回执里给模型可读的错误而不是中断会话
-        return {"query": str(query), "error": str(exc), "results": []}
+    limit = int(max_results or 8)
+
+    key = _cache.make_key("search", prompt=str(query),
+                          params={"max_results": limit}, provider="bing")
+    store = _cache.Cache()
+    receipt = None
+    hit = store.get(key)
+    cached_receipt = ((hit or {}).get("meta") or {}).get("receipt")
+    if cached_receipt and _search_receipt_files_alive(cached_receipt):
+        receipt = dict(cached_receipt)
+        receipt["cache"] = "hit"
+    if receipt is None:
+        try:
+            receipt = _media.search_images_cached(str(query), limit)
+        except Exception as exc:  # 兜底：回执里给模型可读的错误而不是中断会话
+            return {"query": str(query), "error": str(exc), "results": []}
+        receipt["cache"] = "miss"
+        if not receipt.get("error"):
+            clean = {k: v for k, v in receipt.items() if k != "cache"}
+            store.put(key, kind="search", meta={"query": str(query), "receipt": clean})
+
     cached = [(m.get("title") or "参考图", m.get("local_path") or "")
               for m in receipt.get("results") or [] if m.get("local_path")]
     if cached:
@@ -376,6 +429,15 @@ def _run_image_search(args: dict) -> dict:
             if not any(item.get("url") == path for item in LAST_IMAGES):
                 LAST_IMAGES.append({"url": path, "alt": title})
     return receipt
+
+
+def _search_receipt_files_alive(receipt: dict) -> bool:
+    """缓存命中的诚实性检查：所有 local_path 指到的文件必须还在盘上。"""
+    results = (receipt or {}).get("results") or []
+    paths = [m.get("local_path") for m in results if m.get("local_path")]
+    if not paths:
+        return False
+    return all(Path(p).exists() for p in paths)
 
 
 class AIError(RuntimeError):

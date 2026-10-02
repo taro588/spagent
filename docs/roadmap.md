@@ -10,7 +10,7 @@
 | 4 | 完成 `create_fill_layer` / `set_base_color` / `set_roughness` / `set_metallic` / `set_material_source` / `resource.import` 等核心真实操作 | ✅ 已完成 | 见 `docs/tool-registry.md`；语义化单通道工具已补齐 |
 | 5 | 用真实 Painter 项目做集成测试 | ✅ 已完成 | `plugin/core/integration_smoke.py`（Painter 的 Window 菜单入口）：只读探测 + 临时工程端到端；报告落盘 JSON，`tools/check_smoke_report.py` 做门禁（见 `docs/integration-smoke.md`） |
 | 6 | 再接 PBR、搜索、视觉和多 Agent | ✅ 全部已接 | 搜索/图片/视觉矩阵/PBR（0.7.0–0.7.4）；Master Agent 编排+错误重路由（0.7.6） |
-| 7 | 最后做安装器、UI、黑边、缓存、错误恢复和发布验收 | 🟡 部分完成 | 0.6.4–0.6.8 已修掉黑边、插件常驻、双 host 互殴、GPU 档位崩溃；缓存/错误恢复/发布验收未系统化 |
+| 7 | 最后做安装器、UI、黑边、缓存、错误恢复和发布验收 | 🟡 大部分完成 | 安装器（0.6.x）+ 黑边/插件常驻/双 host 互殴/GPU 档位崩溃已修（0.6.4–0.6.8）；**缓存与分辨率成本策略已系统化（0.7.8，§22）**；错误恢复已有事务回滚（0.7.5）+ 分类重路由（0.7.6）；发布验收由 `tests/validate_release.py` 逐项锁定。剩：§27 十七项验收的自动化报告化 |
 
 ## 已完成（本轮）
 
@@ -159,3 +159,13 @@ AttributeError。对照本机官方声明文件（Python API 0.3.4 / Painter 11.
    对话框明示分类与去向）。257 项测试全绿，证伪三处如实红。
    剩余：`plan_steps` 是规则模板版；「Reasoning 模型动态拆解任意目标」
    的完全体需真机多模型会话验证。
+8. **缓存与成本 / 分辨率纪律（§22）**：三类产物统一缓存、键含
+   provider/model、低分辨率先验证再升最终、导出受 GPU 与项目封顶。
+   ✅ **已完成（2026-10-02，0.7.8）**：`core/cache.py`（三类产物统一
+   索引、缓存键 = prompt+reference+参数+provider+model 规范化 sha256、
+   原子落盘、TTL + 条目/字节双上限 LRU、淘汰不删产物、`saved_requests`
+   命中统计）；`core/resolution.py`（目标平台档位 + draft→final 两阶段 +
+   GPU/Texture Set 封顶，`capped` 只表示「被硬约束压下来」）；接线到
+   `image_search`（命中省请求，命中前校验产物文件仍存活——杜绝假命中）
+   与 `pbr_generate`（回执携带分辨率计划）。修一处测试污染（测试写到
+   真实缓存目录）。303 项测试全绿，证伪三处如实红。
