@@ -26,6 +26,34 @@ def test_manifest():
     assert "controlled_actions" in data["capabilities"]
 
 
+def test_payload_root_has_no_legacy_scaffold():
+    """载荷根目录不得出现旧脚手架（0.7.9 事故锁）。
+
+    真机事故（2026-10-07）：Painter 插件目录里同时存在
+    __init__.py + main.py（9-26 的最早脚手架）与现行 manifest
+    entry_point=sp_ai_assistant.py。Painter 扫描插件目录时先执行
+    __init__.py，把整个目录当作包 plugins 去 import，main.py 又去
+    import substance_painter（加载上下文里时机不对）→ 整包 import
+    失败 → 插件模块整体消失，表现为「整个插件打不开」。
+
+    这两个文件早已废弃（entry_point 早改为 sp_ai_assistant.py），
+    留在仓库里等于随时可复现的事故源：任何「把 plugin 整个目录拷进
+    Painter」的操作都会立刻复现。此锁保证它们不会回来。
+    """
+    banned = ["__init__.py", "main.py"]
+    legacy = [name for name in banned if (ROOT / "plugin" / name).exists()]
+    assert not legacy, (
+        "plugin/ 根目录出现已废弃的旧脚手架文件 %s。这些文件会把 Painter "
+        "插件目录变成 Python 包并抢先执行，导致整个插件加载失败"
+        "（entry_point 是 sp_ai_assistant.py，不需要它们）。" % legacy)
+
+
+def test_no_stale_bytecode_in_payload():
+    """载荷里不得有 __pycache__——陈旧字节码会骗过后续测试与加载。"""
+    caches = [str(p.relative_to(ROOT)) for p in (ROOT / "plugin").rglob("__pycache__")]
+    assert not caches, "plugin/ 下存在 __pycache__（陈旧字节码风险）：%s" % caches
+
+
 def test_release_versions_are_synchronized():
     manifest = json.loads((ROOT / "plugin" / "manifest.json").read_text(encoding="utf-8"))
     iss = (ROOT / "installer" / "SP_AI_Assistant.iss").read_text(encoding="utf-8")
